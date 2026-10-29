@@ -36,7 +36,7 @@
  * DEBUG       左下角状态角标                                    默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v1.0';
+const SCRIPT_VER = 'v1.1';
 
 const API = 'https://wallhaven.cc/api/v1/search';
 
@@ -167,12 +167,26 @@ export default async function (ctx) {
   }
 
   // ── 下载图片（Wallhaven 图床直连，不需要 referer 也能拿）─────
+  // iOS 桌面小组件对整包大小很敏感：太大就干脆用 432px 缩略图（约 25KB），
+  // 模糊但一定能画出来，比白板强
+  const HARD_KB = Math.max(1200, cfg.capKb * 2);
+  const src = (cfg.quality === 'thumb' || (candidate.size && candidate.size / 1024 > HARD_KB && candidate.thumb))
+    ? { url: candidate.thumb || candidate.path, small: true }
+    : { url: candidate.path, small: false };
+
   let img = null;
   try {
-    img = await download(ctx, candidate.path, cfg);
+    img = await download(ctx, src.url, cfg);
+    if (img.bytes / 1024 > HARD_KB && candidate.thumb && !src.small) {
+      img = await download(ctx, candidate.thumb, cfg);   // 原图太大 → 换缩略图重试
+      src.small = true;
+    }
   } catch (e) {
     lastError = (e && e.message) || '图片下载失败';
     if (e && (e.status === 429 || e.status === 403)) errorStatus = e.status;
+    if (candidate.thumb) {
+      try { img = await download(ctx, candidate.thumb, cfg); src.small = true; } catch (e2) {}
+    }
   }
 
   if (!img) {
@@ -192,6 +206,7 @@ export default async function (ctx) {
     url: img.url,
     dataUri: img.dataUri,
     sizeKb: Math.round(img.bytes / 1024),
+    thumbUsed: !!src.small,
     searches,
     keyword: cfg.keyword,
     sorting: cfg.sortingUsed,
@@ -246,7 +261,13 @@ function readConfig(env, family) {
   const sortLabel = s('SORT', '相关度');
   const sort = keyword ? (SORT_MAP[sortLabel] || 'relevance') : 'random';
 
-  const quality = /高清|高畫質|full|master/i.test(s('QUALITY', '省流')) ? 'full' : 'slim';
+  const qualityLabel = s('QUALITY', '省流');
+  // 每个档位对应「原图」的大小上限（KB）；超了就先换一张，实在没有才用缩略图
+  // thumb = 直接只要 432px 缩略图（约 25KB），用来排查「桌面上不显示」
+  const quality = /缩略|thumb/i.test(qualityLabel) ? 'thumb'
+    : /省流|小/i.test(qualityLabel) ? 'slim'
+    : /高清|大/i.test(qualityLabel) ? 'full' : 'std';
+  const capKb = quality === 'thumb' ? 60 : quality === 'slim' ? 450 : quality === 'full' ? 2500 : 900;
 
   return {
     keyword,
@@ -258,7 +279,7 @@ function readConfig(env, family) {
     ratioKey: RATIO_PARAM[ratioLabel] === undefined ? 'any' : (RATIO_PARAM[ratioLabel] || 'any'),
     ratioParam: RATIO_PARAM[ratioLabel] === undefined ? '' : RATIO_PARAM[ratioLabel],
     ratioLabel,
-    maxMb: /不限|none|∞/i.test(s('MAX_MB', '')) ? 0 : int('MAX_MB', 2, 0, 50),
+    capKb,
     quality,
     cooldownMin: int('COOLDOWN', 30, 0, 24 * 60),
     maxHistory: int('NO_REPEAT', 100, 1, 2000),
@@ -282,7 +303,7 @@ function uiSignature(cfg) {
 
 function signature(cfg) {
   return [cfg.keyword, cfg.sortingUsed, cfg.category, cfg.atleast, cfg.purityUsed,
-    cfg.ratioParam, cfg.quality, cfg.maxMb, !!cfg.apiKey].join('|');
+    cfg.ratioParam, cfg.quality, !!cfg.apiKey].join('|');
 }
 
 function nextIso(minutes) {
@@ -350,6 +371,7 @@ async function search(ctx, cfg, pool) {
   const items = body.data.map(it => ({
     id: it.id,
     path: it.path,
+    thumb: (it.thumbs && (it.thumbs.large || it.thumbs.original || it.thumbs.small)) || '',
     w: Number(it.dimension_x) || 0,
     h: Number(it.dimension_y) || 0,
     size: Number(it.file_size) || 0,
@@ -371,8 +393,9 @@ async function search(ctx, cfg, pool) {
 /* ============================ 选图 ============================ */
 
 function sizeOk(it, cfg) {
-  if (cfg.quality === 'full' || !cfg.maxMb) return true;
-  return !it.size || it.size <= cfg.maxMb * 1024 * 1024;
+  if (cfg.quality === 'thumb') return !!(it.thumb || it.path);   // 只看缩略图，原图多大都无所谓
+  if (!it.size) return true;
+  return it.size <= cfg.capKb * 1024;
 }
 
 function pickFromPool(pool, historySet, cfg) {
@@ -463,7 +486,7 @@ function buildWidget(entry, family, cfg, refreshAfter) {
       type: 'text',
       text: `${SCRIPT_VER} ${entry.ar || '-'} · ${cfg.ratioLabel} · ${cfg.purityUsed === 111 ? 'R18' : (cfg.purityUsed === 110 ? 'Sketchy' : 'SFW')}`
         + `${entry.purityDowngraded ? ' · ⚠无 Key 降级' : ''}`
-        + `${entry.sizeKb ? ' · ' + entry.sizeKb + 'KB' : ''}`
+        + `${entry.sizeKb ? ' · ' + entry.sizeKb + 'KB' + (entry.thumbUsed ? '(缩略)' : '') : ''}`
         + ` · ${entry.keyword ? '「' + entry.keyword + '」' : '随机'}${entry.sorting ? '/' + entry.sorting : ''}`
         + ` · ${entry.searches}搜`,
       font: { size: 'caption2' },
