@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v1.1';
+const SCRIPT_VER = 'v1.3';
 
 const HOSTS = {
   yande: 'https://yande.re/post.json',
@@ -62,14 +62,16 @@ const DEFAULT_RATIO = {
 
 // yande.re / Konachan 的 rating 只有三个值：
 //   s = safe（全年龄）、q = questionable（擦边）、e = explicit（工口）
-// 所以三个选项是「包含关系」，不是三种并列口味
+// 选项按「要哪几种」来给，不是递进关系：
 const RATING_TAG = {
-  '仅全年龄': 'rating:s',        // 只要 s
-  '全年龄 + 擦边': '-rating:e',   // 排除 e，剩下 s + q
-  '全部（含 R18）': '',           // 不筛，s + q + e
+  '仅全年龄': 'rating:s',                    // 只要 s
+  '仅擦边': 'rating:q',                      // 只要 q
+  '全年龄 + 擦边': '-rating:e',               // s + q（默认，不含工口）
+  '全年龄 + 擦边 + 工口': '',                  // 不筛，s + q + e
   // 兼容旧值
   '含擦边': '-rating:e',
-  '全部': ''
+  '全部（含 R18）': '',
+  '全部': '-rating:e'
 };
 
 const MAX_POOL = 80;
@@ -225,8 +227,8 @@ function readConfig(env, family) {
     tagsJoined: rawTags.join(' '),
     site,
     ratioLabel,
-    ratingLabel: s('RATING', '仅全年龄'),
-    ratingTag: RATING_TAG[s('RATING', '仅全年龄')] !== undefined ? RATING_TAG[s('RATING', '仅全年龄')] : 'rating:s',
+    ratingLabel: s('RATING', '全年龄 + 擦边'),
+    ratingTag: RATING_TAG[s('RATING', '全年龄 + 擦边')] !== undefined ? RATING_TAG[s('RATING', '全年龄 + 擦边')] : '-rating:e',
     minW: int('MIN_W', 1024, 200, 4000),
     cooldownMin: int('COOLDOWN', 30, 0, 24 * 60),
     maxHistory: int('NO_REPEAT', 100, 1, 2000),
@@ -261,11 +263,14 @@ function hostsFor(cfg) {
   return ['yande', 'konachan'];
 }
 
+// 注意：标签之间必须用「空格」分隔再整体 encodeURIComponent。
+// 如果先拼 '+' 再编码，'+' 会变成 %2B（字面加号），服务端就不当作分隔符了——
+// 整个串被当成一个不存在的标签，返回一堆随机图，分级/标签筛选全部失效。
 function buildTagString(cfg, useTags) {
   const parts = ['order:random'];                 // 必须第一个，否则随机失效
   if (useTags && cfg.tags.length) parts.push(...cfg.tags);
   if (cfg.ratingTag) parts.push(cfg.ratingTag);
-  return parts.join('+');
+  return parts.join(' ');
 }
 
 async function search(ctx, cfg) {

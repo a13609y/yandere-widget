@@ -32,8 +32,8 @@ env_schema:
 
   RATING:
     name: 内容分级
-    description: "三个是包含关系：仅全年龄 = 只要 rating:s；全年龄 + 擦边 = 排除 rating:e（s+q）；全部 = 不筛（s+q+e）。想看工口才需要选最后一项"
-    options: ["仅全年龄", "全年龄 + 擦边", "全部（含 R18）"]
+    description: "按「要哪几种」选：仅全年龄=只要 s；仅擦边=只要 q；全年龄+擦边=s+q（默认）；最后一项才会带上工口 e"
+    options: ["仅全年龄", "仅擦边", "全年龄 + 擦边", "全年龄 + 擦边 + 工口"]
 
   MIN_W:
     name: 最小短边
