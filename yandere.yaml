@@ -1,0 +1,70 @@
+name: yande.re 动漫图
+description: 从 yande.re / Konachan 按标签取动漫插画，按小组件尺寸匹配画幅；免登录，sample 图 1500px 体积小
+author: Cuttlefish
+icon: photo.stack
+homepage: https://github.com/a13609y/yandere-widget
+manual: https://github.com/a13609y/yandere-widget#readme
+
+env_schema:
+  TAGS:
+    name: 标签
+    description: "yande.re 只有标签，没有全文搜索；多个标签是「同时满足」，用空格或逗号分隔（例如 blue_sky clouds）。留空 = 随机。常见标签：landscape、sky、clouds、hatsune_miku、original"
+    default_value: ""
+
+  SITE:
+    name: 图源
+    description: "自动 = 先查 yande.re，标签没结果再试 Konachan（两边标签库不完全一样，比如 sky 在 yande.re 就没有）"
+    options: ["自动", "yande.re", "Konachan"]
+
+  RATIO_SMALL:
+    name: 画幅·小号
+    description: "按图片实际宽高比判断：≥1.4 横图、0.85~1.4 方图、<0.85 竖图"
+    options: ["方图", "横图", "竖图", "不限"]
+  RATIO_MEDIUM:
+    name: 画幅·中号
+    options: ["方图", "横图", "竖图", "不限"]
+  RATIO_LARGE:
+    name: 画幅·大号
+    options: ["方图", "横图", "竖图", "不限"]
+  RATIO_XLARGE:
+    name: 画幅·超大号（iPad）
+    options: ["方图", "横图", "竖图", "不限"]
+
+  RATING:
+    name: 内容分级
+    description: "仅全年龄 = rating:s；含擦边 = 不含 rating:e；全部 = 不筛"
+    options: ["仅全年龄", "含擦边", "全部"]
+
+  MIN_W:
+    name: 最小短边
+    description: "图片短边低于这个值的直接跳过，防止拿到糊图"
+    options: ["720", "1024", "1280", "1500"]
+
+  COOLDOWN:
+    name: 换图间隔
+    description: "分钟，0 = 每次刷新都换"
+    default_value: "30"
+  NO_REPEAT:
+    name: 防重复窗口
+    description: "所有尺寸共用一份历史，显示过的作品在这 N 张内不会再出现"
+    options: ["50", "100", "200", "500"]
+
+  SHOW_INFO:
+    name: 显示分辨率
+    description: "左下角显示 分辨率 + 收藏数"
+    options: ["true", "false"]
+  DEBUG:
+    name: 调试角标
+    description: "显示版本/图源/比例/分级/体积/标签/搜索次数"
+    options: ["true", "false"]
+
+scriptings:
+  - generic:
+      name: YandereWidget
+      script_url: https://raw.githubusercontent.com/a13609y/yandere-widget/main/yandere.js
+      timeout: 60
+
+widgets:
+  - name: 动漫图
+    script_name: YandereWidget
+    env: {}
