@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v1.0';
+const SCRIPT_VER = 'v1.1';
 
 const HOSTS = {
   yande: 'https://yande.re/post.json',
@@ -60,8 +60,14 @@ const DEFAULT_RATIO = {
   systemExtraLarge: '横图'
 };
 
+// yande.re / Konachan 的 rating 只有三个值：
+//   s = safe（全年龄）、q = questionable（擦边）、e = explicit（工口）
+// 所以三个选项是「包含关系」，不是三种并列口味
 const RATING_TAG = {
-  '仅全年龄': 'rating:s',
+  '仅全年龄': 'rating:s',        // 只要 s
+  '全年龄 + 擦边': '-rating:e',   // 排除 e，剩下 s + q
+  '全部（含 R18）': '',           // 不筛，s + q + e
+  // 兼容旧值
   '含擦边': '-rating:e',
   '全部': ''
 };
