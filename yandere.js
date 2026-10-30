@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v2.1';
+const SCRIPT_VER = 'v2.2';
 
 const HOSTS = {
   yande: 'https://yande.re/post.json',
@@ -122,7 +122,7 @@ const RATING_ALLOWED = {
 // 排除用的敏感标签。yande.re 的 -tag 反选实测无效（只对 rating: 这类元标签生效），
 // 所以只能抓回来后在本地按标签精确匹配剔除
 const EXCLUDE_PRESETS = [
-  { key: 'EX_NIPPLE', tags: ['nipples'] },
+  { key: 'EX_NIPPLE', tags: ['nipple', 'nipples'] },   // 单复数都排
   { key: 'EX_PANTY', tags: ['panties'] },
   { key: 'EX_UNDERWEAR', tags: ['underwear', 'bra'] },
   { key: 'EX_SEETHROUGH', tags: ['see_through'] },
@@ -316,7 +316,7 @@ function readConfig(env, family) {
     const out = [];
     EXCLUDE_PRESETS.forEach(p => { if (bool(p.key, false)) out.push(...p.tags); });
     s('EXCLUDE_EXTRA', '')
-      .split(/[\s,，、|]+/)
+      .split(/[,，、|]/)                              // 只用逗号分组：空格是标签内部的（erect nipples → erect_nipples）
       .map(x => x.trim().toLowerCase().replace(/\s+/g, '_'))
       .filter(Boolean)
       .forEach(t => out.push(t));
@@ -518,14 +518,30 @@ function bandOf(it) {
   return '竖图';
 }
 
-function passesFilter(it, cfg) {
-  if (it.rating && cfg.ratingAllowed.indexOf(it.rating) < 0) return false;   // 分级兜底
-  if (cfg.excludeTags.length) {                                            // 排除标签（精确匹配 token）
-    const set = new Set(String(it.tags || '').toLowerCase().split(' '));
-    for (let i = 0; i < cfg.excludeTags.length; i++) {
-      if (set.has(cfg.excludeTags[i])) return false;
+// 按 `_` 分段匹配：排除词作为「完整的一段」出现才算命中
+//   nipples        → nipples / erect_nipples / puffy_nipples  ✅
+//   bra            → braid 不会命中（braid 是整段）           ✅
+//   erect_nipples  → erect_nipples 命中（多段也能匹配）        ✅
+function hitsExclude(tags, excludes) {
+  const tokens = String(tags || '').toLowerCase().split(' ').filter(Boolean);
+  if (!tokens.length) return false;
+  for (let i = 0; i < excludes.length; i++) {
+    const kw = excludes[i];
+    if (!kw) continue;
+    for (let j = 0; j < tokens.length; j++) {
+      const t = tokens[j];
+      if (t === kw
+        || t.indexOf(kw + '_') === 0
+        || t.length > kw.length && t.lastIndexOf('_' + kw) === t.length - kw.length - 1
+        || t.indexOf('_' + kw + '_') >= 0) return true;
     }
   }
+  return false;
+}
+
+function passesFilter(it, cfg) {
+  if (it.rating && cfg.ratingAllowed.indexOf(it.rating) < 0) return false;   // 分级兜底
+  if (cfg.excludeTags.length && hitsExclude(it.tags, cfg.excludeTags)) return false;
   const band = bandOf(it);
   if (cfg.ratioLabel !== '不限' && band && band !== cfg.ratioLabel) return false;
   const shortSide = Math.min(it.sampleW || 0, it.sampleH || 0);
