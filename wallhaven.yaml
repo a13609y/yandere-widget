@@ -52,6 +52,10 @@ env_schema:
     options: ["不限", "1280x720", "1920x1080", "2560x1440"]
 
 
+  IMG_PROXY:
+    name: 缩放服务（可选）
+    description: "留空 = 直接下原图。填了就用它缩图，{url} 会被替换成原图地址，例如 https://你的worker.workers.dev/?w=1200&url={url}。Wallhaven 官方缩略图只有 432×243 的横向裁切，第三方免费缩放（wsrv / Photon）又都封了这个域名，所以想要 4K 大图就必须自建一个"
+    default_value: ""
   COOLDOWN:
     name: 换图间隔
     description: "分钟；0 = 每次刷新都换（实际节奏受 iOS 刷新预算限制）"

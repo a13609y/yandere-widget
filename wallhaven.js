@@ -36,7 +36,7 @@
  * DEBUG       左下角状态角标                                    默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v1.4';
+const SCRIPT_VER = 'v1.5';
 
 const API = 'https://wallhaven.cc/api/v1/search';
 
@@ -268,6 +268,8 @@ function readConfig(env, family) {
     ratioParam: RATIO_PARAM[ratioLabel] === undefined ? '' : RATIO_PARAM[ratioLabel],
     ratioLabel,
     hardLimitKb: HARD_LIMIT_KB,
+    // 可选：自建/第三方缩放服务，用 {url} 占位。留空则直接下原图
+    imgProxy: s('IMG_PROXY', ''),
     cooldownMin: int('COOLDOWN', 30, 0, 24 * 60),
     maxHistory: int('NO_REPEAT', 100, 1, 2000),
     showInfo: bool('SHOW_INFO', true),
@@ -290,7 +292,7 @@ function uiSignature(cfg) {
 
 function signature(cfg) {
   return [cfg.keyword, cfg.sortingUsed, cfg.category, cfg.atleast, cfg.purityUsed,
-    cfg.ratioParam, !!cfg.apiKey].join('|');
+    cfg.ratioParam, !!cfg.apiKey, cfg.imgProxy].join('|');
 }
 
 function nextIso(minutes) {
@@ -401,7 +403,11 @@ function pickFromPool(pool, historySet, cfg) {
 
 /* ============================ 下载 ============================ */
 
-async function download(ctx, url, cfg) {
+async function download(ctx, rawUrl, cfg) {
+  // 配了缩放服务就套一层（例如 https://xxx.workers.dev/?w=1200&url={url}）
+  const url = cfg.imgProxy && cfg.imgProxy.indexOf('{url}') >= 0
+    ? cfg.imgProxy.replace('{url}', encodeURIComponent(rawUrl))
+    : rawUrl;
   let resp;
   try {
     resp = await ctx.http.get(url, {
