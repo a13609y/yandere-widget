@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v1.5';
+const SCRIPT_VER = 'v1.6';
 
 const HOSTS = {
   yande: 'https://yande.re/post.json',
@@ -66,12 +66,22 @@ const DEFAULT_RATIO = {
 const RATING_TAG = {
   '仅全年龄': 'rating:s',                    // 只要 s
   '仅擦边': 'rating:q',                      // 只要 q
-  '全年龄 + 擦边': '-rating:e',               // s + q（默认，不含工口）
-  '全年龄 + 擦边 + 工口': '',                  // 不筛，s + q + e
+  '仅工口': 'rating:e',                      // 只要 e
+  '全年龄 + 擦边': '-rating:e',               // s + q（默认）
+  '全部（含工口）': '',                        // 不筛，s + q + e
   // 兼容旧值
+  '全年龄 + 擦边 + 工口': '',
   '含擦边': '-rating:e',
   '全部（含 R18）': '',
-  '全部': '-rating:e'
+  '全部': ''                    // 旧值「全部」= 以前的不筛，保守起见改成 s+q？这里保持不筛
+};
+
+const RATING_ALLOWED = {
+  '仅全年龄': ['s'],
+  '仅擦边': ['q'],
+  '仅工口': ['e'],
+  '全年龄 + 擦边': ['s', 'q'],
+  '全部（含工口）': ['s', 'q', 'e']
 };
 
 const MAX_POOL = 80;
@@ -234,10 +244,7 @@ function readConfig(env, family) {
     // 防止「标签无结果→退回随机」时把 e 级图漏进来
     ratingAllowed: (() => {
       const label = s('RATING', '全年龄 + 擦边');
-      if (label === '仅全年龄') return ['s'];
-      if (label === '仅擦边') return ['q'];
-      if (label === '全年龄 + 擦边 + 工口' || label === '全部（含 R18）' || label === '全部') return ['s', 'q', 'e'];
-      return ['s', 'q'];
+      return RATING_ALLOWED[label] || ['s', 'q'];      // 兼容旧值：未知一律按 s+q
     })(),
     minW: int('MIN_W', 1024, 200, 4000),
     cooldownMin: int('COOLDOWN', 30, 0, 24 * 60),
