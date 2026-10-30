@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v1.3';
+const SCRIPT_VER = 'v1.4';
 
 const HOSTS = {
   yande: 'https://yande.re/post.json',
@@ -229,6 +229,15 @@ function readConfig(env, family) {
     ratioLabel,
     ratingLabel: s('RATING', '全年龄 + 擦边'),
     ratingTag: RATING_TAG[s('RATING', '全年龄 + 擦边')] !== undefined ? RATING_TAG[s('RATING', '全年龄 + 擦边')] : '-rating:e',
+    // 服务端标签只是第一道闸；这里再本地校验一次，
+    // 防止「标签无结果→退回随机」时把 e 级图漏进来
+    ratingAllowed: (() => {
+      const label = s('RATING', '全年龄 + 擦边');
+      if (label === '仅全年龄') return ['s'];
+      if (label === '仅擦边') return ['q'];
+      if (label === '全年龄 + 擦边 + 工口' || label === '全部（含 R18）' || label === '全部') return ['s', 'q', 'e'];
+      return ['s', 'q'];
+    })(),
     minW: int('MIN_W', 1024, 200, 4000),
     cooldownMin: int('COOLDOWN', 30, 0, 24 * 60),
     maxHistory: int('NO_REPEAT', 100, 1, 2000),
@@ -360,6 +369,7 @@ function bandOf(it) {
 }
 
 function passesFilter(it, cfg) {
+  if (it.rating && cfg.ratingAllowed.indexOf(it.rating) < 0) return false;   // 分级兜底
   const band = bandOf(it);
   if (cfg.ratioLabel !== '不限' && band && band !== cfg.ratioLabel) return false;
   const shortSide = Math.min(it.sampleW || 0, it.sampleH || 0);
