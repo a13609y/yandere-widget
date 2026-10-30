@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v1.4';
+const SCRIPT_VER = 'v1.5';
 
 const HOSTS = {
   yande: 'https://yande.re/post.json',
@@ -122,9 +122,10 @@ export default async function (ctx) {
   let errorStatus = null;
   let tagFallback = false;
 
-  while (!candidate && searches < 3) {
+  // 素材不够时继续翻页：每次换一页（order:random 下每页是不同的一批），最多 4 次
+  while (!candidate && searches < 4) {
     try {
-      const res = await search(ctx, cfg);
+      const res = await search(ctx, cfg, searches + 1);
       searches++;
       const have = new Set(pool.items.map(it => String(it.id)));
       const added = res.items.filter(it => !have.has(String(it.id)));
@@ -282,13 +283,14 @@ function buildTagString(cfg, useTags) {
   return parts.join(' ');
 }
 
-async function search(ctx, cfg) {
+async function search(ctx, cfg, page) {
   const hosts = hostsFor(cfg);
+  const pg = Math.max(1, page | 0);
   let triedEmpty = false;
 
   for (let i = 0; i < hosts.length; i++) {
     const host = hosts[i];
-    const url = HOSTS[host] + '?tags=' + encodeURIComponent(buildTagString(cfg, true)) + '&limit=30';
+    const url = HOSTS[host] + '?tags=' + encodeURIComponent(buildTagString(cfg, true)) + '&limit=100&page=' + pg;
     let body;
     try {
       body = await fetchJson(ctx, url, cfg);
@@ -305,7 +307,7 @@ async function search(ctx, cfg) {
 
   // 标签组合全空：退回「只要分级 + 随机」，避免组件空着
   if (triedEmpty && cfg.tags.length) {
-    const url = HOSTS[hosts[0]] + '?tags=' + encodeURIComponent(buildTagString(cfg, false)) + '&limit=30';
+    const url = HOSTS[hosts[0]] + '?tags=' + encodeURIComponent(buildTagString(cfg, false)) + '&limit=100&page=' + pg;
     const body = await fetchJson(ctx, url, cfg);
     const passed = normalize(body, hosts[0]).filter(it => passesFilter(it, cfg));
     return { items: passed, empty: passed.length === 0, tagFallback: true };
