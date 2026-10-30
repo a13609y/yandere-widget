@@ -36,7 +36,7 @@
  * DEBUG       左下角状态角标                                    默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v1.3';
+const SCRIPT_VER = 'v1.4';
 
 const API = 'https://wallhaven.cc/api/v1/search';
 
@@ -167,25 +167,18 @@ export default async function (ctx) {
   }
 
   // ── 下载图片（Wallhaven 图床直连，不需要 referer 也能拿）─────
-  // iOS 桌面小组件对整包大小很敏感：太大就干脆用 432px 缩略图（约 25KB），
-  // 模糊但一定能画出来，比白板强
-  const HARD_KB = Math.max(1200, cfg.capKb * 2);
-  const src = (cfg.quality === 'thumb' || (candidate.size && candidate.size / 1024 > HARD_KB && candidate.thumb))
-    ? { url: candidate.thumb || candidate.path, small: true }
-    : { url: candidate.path, small: false };
-
+  // 用原图；只有「下下来还是超过硬上限」时才换下一张，不做任何降质处理
   let img = null;
-  try {
-    img = await download(ctx, src.url, cfg);
-    if (img.bytes / 1024 > HARD_KB && candidate.thumb && !src.small) {
-      img = await download(ctx, candidate.thumb, cfg);   // 原图太大 → 换缩略图重试
-      src.small = true;
-    }
-  } catch (e) {
-    lastError = (e && e.message) || '图片下载失败';
-    if (e && (e.status === 429 || e.status === 403)) errorStatus = e.status;
-    if (candidate.thumb) {
-      try { img = await download(ctx, candidate.thumb, cfg); src.small = true; } catch (e2) {}
+  let tries = 0;
+  while (!img && candidate && tries < 3) {
+    tries++;
+    try {
+      img = await download(ctx, candidate.path, cfg);
+    } catch (e) {
+      lastError = (e && e.message) || '图片下载失败';
+      if (e && (e.status === 429 || e.status === 403)) { errorStatus = e.status; break; }
+      historySet.add(String(candidate.id));                  // 这张不行，跳过换一张
+      candidate = pickFromPool(pool, historySet, cfg);
     }
   }
 
@@ -206,7 +199,6 @@ export default async function (ctx) {
     url: img.url,
     dataUri: img.dataUri,
     sizeKb: Math.round(img.bytes / 1024),
-    thumbUsed: !!src.small,
     searches,
     keyword: cfg.keyword,
     sorting: cfg.sortingUsed,
@@ -261,15 +253,9 @@ function readConfig(env, family) {
   const sortLabel = s('SORT', '相关度');
   const sort = keyword ? (SORT_MAP[sortLabel] || 'relevance') : 'random';
 
-  const qualityLabel = s('QUALITY', '自动');
-  // 每个档位对应「原图」的大小上限（KB）；超了就先换一张，实在没有才用缩略图
-  // thumb = 只要 432px 缩略图（约 25KB）。小号 510px 宽，缩略图够；中大号要 1090px，会糊
-  let quality = /缩略|thumb/i.test(qualityLabel) ? 'thumb'
-    : /省流|小/i.test(qualityLabel) ? 'slim'
-    : /高清|大/i.test(qualityLabel) ? 'full'
-    : /标准/i.test(qualityLabel) ? 'std' : 'auto';
-  if (quality === 'auto') quality = family === 'systemSmall' ? 'thumb' : 'slim';
-  const capKb = quality === 'thumb' ? 60 : quality === 'slim' ? 450 : quality === 'full' ? 2500 : 900;
+  // 不再有「清晰度/体积」档位：图片一律用原图，只有一条底线——
+  // 单张超过 HARD_LIMIT_KB 就换下一张（超过这个体积 iOS 桌面基本画不出来）
+  const HARD_LIMIT_KB = 1200;   // 只做「能不能显示」的硬线，不是清晰度档位
 
   return {
     keyword,
@@ -281,8 +267,7 @@ function readConfig(env, family) {
     ratioKey: RATIO_PARAM[ratioLabel] === undefined ? 'any' : (RATIO_PARAM[ratioLabel] || 'any'),
     ratioParam: RATIO_PARAM[ratioLabel] === undefined ? '' : RATIO_PARAM[ratioLabel],
     ratioLabel,
-    capKb,
-    quality,
+    hardLimitKb: HARD_LIMIT_KB,
     cooldownMin: int('COOLDOWN', 30, 0, 24 * 60),
     maxHistory: int('NO_REPEAT', 100, 1, 2000),
     showInfo: bool('SHOW_INFO', true),
@@ -305,7 +290,7 @@ function uiSignature(cfg) {
 
 function signature(cfg) {
   return [cfg.keyword, cfg.sortingUsed, cfg.category, cfg.atleast, cfg.purityUsed,
-    cfg.ratioParam, cfg.quality, !!cfg.apiKey].join('|');
+    cfg.ratioParam, !!cfg.apiKey].join('|');
 }
 
 function nextIso(minutes) {
@@ -394,10 +379,10 @@ async function search(ctx, cfg, pool) {
 
 /* ============================ 选图 ============================ */
 
+// 只做「能不能显示」的判断：预知体积超标的直接跳过，省得下载完再丢
 function sizeOk(it, cfg) {
-  if (cfg.quality === 'thumb') return !!(it.thumb || it.path);   // 只看缩略图，原图多大都无所谓
   if (!it.size) return true;
-  return it.size <= cfg.capKb * 1024;
+  return it.size <= cfg.hardLimitKb * 1024;
 }
 
 function pickFromPool(pool, historySet, cfg) {
@@ -408,20 +393,8 @@ function pickFromPool(pool, historySet, cfg) {
   const small = fresh.filter(it => sizeOk(it, cfg));
   if (small.length === 0) return null;           // 这一页没有够小的，让外层再翻页
 
-  // 小组件只需要 1000~1600 像素宽：优先「原生宽度适中 + 文件小 + 不是 PNG」的原图，
-  // 这样不用压缩也很清晰，整包体积还压得住
-  const TARGET_W = 1400;
-  const scored = small.map(it => {
-    const w = it.w || TARGET_W;
-    const wScore = Math.abs(Math.log(w / TARGET_W));       // 越接近 1400 宽越好
-    const sScore = (it.size || cfg.capKb * 1024) / (cfg.capKb * 1024);  // 越小越好
-    const pngPenalty = /\.png$/i.test(it.path) ? 0.8 : 0;   // png 同样的画质通常大好几倍
-    return { it, score: wScore + sScore * 0.6 + pngPenalty };
-  }).sort((a, b) => a.score - b.score);
-
-  // 在最好的几千里随机，避免每次都挑同一张
-  const head = scored.slice(0, Math.min(5, scored.length));
-  const picked = head[Math.floor(Math.random() * head.length)].it;
+  // 不按清晰度/体积排序，纯随机（原来的筛选条件已经在别处做完了）
+  const picked = small[Math.floor(Math.random() * small.length)];
   pool.items = pool.items.filter(it => it !== picked);
   return picked;
 }
@@ -453,6 +426,11 @@ async function download(ctx, url, cfg) {
   if (bytes.byteLength < 1024 || !looksImage) {
     const e = new Error('图片内容异常');
     e.status = 0;
+    throw e;
+  }
+  if (bytes.byteLength / 1024 > (cfg.hardLimitKb || 1200)) {
+    const e = new Error('图片超过 ' + cfg.hardLimitKb + 'KB，换一张');
+    e.status = 413;
     throw e;
   }
   const mime = detectMime(bytes);
@@ -502,7 +480,7 @@ function buildWidget(entry, family, cfg, refreshAfter) {
       type: 'text',
       text: `${SCRIPT_VER} ${entry.ar || '-'} · ${cfg.ratioLabel} · ${cfg.purityUsed === 111 ? 'R18' : (cfg.purityUsed === 110 ? 'Sketchy' : 'SFW')}`
         + `${entry.purityDowngraded ? ' · ⚠无 Key 降级' : ''}`
-        + `${entry.sizeKb ? ' · ' + entry.sizeKb + 'KB' + (entry.thumbUsed ? '(缩略)' : '') : ''}`
+        + `${entry.sizeKb ? ' · ' + entry.sizeKb + 'KB' : ''}`
         + ` · ${entry.keyword ? '「' + entry.keyword + '」' : '随机'}${entry.sorting ? '/' + entry.sorting : ''}`
         + ` · ${entry.searches}搜`,
       font: { size: 'caption2' },
