@@ -31,11 +31,20 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v3.1';
+const SCRIPT_VER = 'v3.2';
 
+// konachan 有两个域名：.net 是纯净镜像（只有 s），.com 才含 q/e。
+// 勾了擦边/工口就自动换 .com，只勾全年龄就用 .net。
 const HOSTS = {
   yande: 'https://yande.re/post.json',
-  konachan: 'https://konachan.net/post.json'
+  konachan: 'https://konachan.net/post.json',
+  konachanR18: 'https://konachan.com/post.json'
+};
+
+const SITE_DOMAIN = {
+  yande: 'yande.re',
+  konachan: 'konachan.net',
+  konachanR18: 'konachan.com'
 };
 
 const K = {
@@ -221,10 +230,11 @@ export default async function (ctx) {
   // ── 下载（sample 图：1500px 长边、200~500KB）─────────────────
   let img = null;
   let tries = 0;
+  const referer = 'https://' + (candidate.site || 'yande.re') + '/';
   while (!img && candidate && tries < 3) {
     tries++;
     try {
-      img = await download(ctx, candidate.sample || candidate.file, cfg);
+      img = await download(ctx, candidate.sample || candidate.file, cfg, referer);
     } catch (e) {
       lastError = (e && e.message) || '图片下载失败';
       if (e && (e.status === 429 || e.status === 403)) { errorStatus = e.status; break; }
@@ -412,9 +422,11 @@ function emptyHint(cfg) {
 /* ============================ 搜索 ============================ */
 
 function hostsFor(cfg) {
+  const wantsAdult = cfg.ratingAllowed.some(k => k === 'q' || k === 'e');
+  const kHost = wantsAdult ? 'konachanR18' : 'konachan';
   if (cfg.site === 'yande') return ['yande'];
-  if (cfg.site === 'konachan') return ['konachan'];
-  return ['yande', 'konachan'];
+  if (cfg.site === 'konachan') return [kHost];
+  return ['yande', kHost];
 }
 
 // 注意：标签之间必须用「空格」分隔再整体 encodeURIComponent。
@@ -519,7 +531,7 @@ function normalize(list, host) {
     return {
       id: p.id,
       site: host,
-      page: 'https://' + (host === 'konachan' ? 'konachan.net' : 'yande.re') + '/post/show/' + p.id,
+      page: 'https://' + (SITE_DOMAIN[host] || 'yande.re') + '/post/show/' + p.id,
       file: p.file_url || '',
       sample: sample || p.file_url || '',
       sampleW,
@@ -596,12 +608,12 @@ function pickFromPool(pool, historySet, cfg) {
 
 /* ============================ 下载 ============================ */
 
-async function download(ctx, url, cfg) {
+async function download(ctx, url, cfg, referer) {
   const safeUrl = encodeURI(decodeURI(url));   // sample 地址里常带空格（%20 或裸空格）
   let resp;
   try {
     resp = await ctx.http.get(safeUrl, {
-      headers: { 'Referer': 'https://yande.re/', 'User-Agent': 'Egern/YandereWidget ' + SCRIPT_VER },
+      headers: { 'Referer': referer || 'https://yande.re/', 'User-Agent': 'Egern/YandereWidget ' + SCRIPT_VER },
       timeout: cfg.timeoutMs
     });
   } catch (e) {

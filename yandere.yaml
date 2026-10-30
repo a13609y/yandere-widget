@@ -15,7 +15,7 @@ env_schema:
 
   SITE:
     name: 内容 · 图源
-    description: "自动 = 先查 yande.re，没结果再试 Konachan（两边标签库不一样，sky 在 yande.re 就是 0 条）"
+    description: "自动 = 先查 yande.re，没结果再试 Konachan。Konachan 会按分级自动换域名：只勾「全年龄」走 konachan.net（纯净镜像），勾了「擦边/工口」自动走 konachan.com（实测 .net 完全不返回 q/e）"
     options: ["自动", "yande.re", "Konachan"]
 
   SORT:
@@ -55,10 +55,11 @@ env_schema:
     options: ["true", "false"]
   SHOW_Q:
     name: 分级 · 擦边（q）
+    description: "打开后 Konachan 会自动切到 konachan.com（.net 镜像没有 q 级内容）"
     options: ["true", "false"]
   SHOW_E:
     name: 分级 · 工口（e）
-    description: "素材最少，单开时可能要多翻几页"
+    description: "素材最少，单开时可能要多翻几页。同样会切到 konachan.com"
     options: ["true", "false"]
 
   # ── 过滤 ──────────────────────────────────────────────
