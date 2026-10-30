@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v1.6';
+const SCRIPT_VER = 'v1.7';
 
 const HOSTS = {
   yande: 'https://yande.re/post.json',
@@ -222,6 +222,26 @@ function readConfig(env, family) {
     return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : d;
   };
 
+  // 分级：三个独立开关，自由组合（至少留一个）
+  const rawAllowed = (() => {
+    const hasToggle = ['SHOW_S', 'SHOW_Q', 'SHOW_E'].some(k => s(k, '') !== '');
+    if (hasToggle) {
+      const out = [];
+      if (bool('SHOW_S', true)) out.push('s');
+      if (bool('SHOW_Q', true)) out.push('q');
+      if (bool('SHOW_E', false)) out.push('e');
+      return out;
+    }
+    // 兼容旧的单选 RATING
+    const legacy = s('RATING', '全年龄 + 擦边');
+    if (legacy === '仅全年龄') return ['s'];
+    if (legacy === '仅擦边') return ['q'];
+    if (legacy === '仅工口') return ['e'];
+    if (legacy === '全部（含工口）' || legacy === '全部（含 R18）' || legacy === '全部') return ['s', 'q', 'e'];
+    return ['s', 'q'];
+  })();
+  const allowed = rawAllowed.length ? rawAllowed : ['s'];   // 全关掉就按全年龄，别把自己筛空
+
   const ownKey = RATIO_BY_FAMILY[family];
   const ratioLabel = s(ownKey, '') || DEFAULT_RATIO[family] || '横图';
 
@@ -238,14 +258,11 @@ function readConfig(env, family) {
     tagsJoined: rawTags.join(' '),
     site,
     ratioLabel,
-    ratingLabel: s('RATING', '全年龄 + 擦边'),
-    ratingTag: RATING_TAG[s('RATING', '全年龄 + 擦边')] !== undefined ? RATING_TAG[s('RATING', '全年龄 + 擦边')] : '-rating:e',
-    // 服务端标签只是第一道闸；这里再本地校验一次，
-    // 防止「标签无结果→退回随机」时把 e 级图漏进来
-    ratingAllowed: (() => {
-      const label = s('RATING', '全年龄 + 擦边');
-      return RATING_ALLOWED[label] || ['s', 'q'];      // 兼容旧值：未知一律按 s+q
-    })(),
+    ratingLabel: allowed.map(x => x === 's' ? '全年龄' : x === 'q' ? '擦边' : '工口').join('+'),
+    ratingTag: ratingTagFor(allowed),
+    // 服务端标签只是第一道闸；本地再校验一次，
+    // 防止「标签无结果→退回随机」时把没勾的等级漏进来
+    ratingAllowed: allowed,
     minW: int('MIN_W', 1024, 200, 4000),
     cooldownMin: int('COOLDOWN', 30, 0, 24 * 60),
     maxHistory: int('NO_REPEAT', 100, 1, 2000),
@@ -255,12 +272,20 @@ function readConfig(env, family) {
   };
 }
 
+// 由选中的等级集合反推服务端标签：全选=不传；选一个=rating:x；选两个=排除第三个
+function ratingTagFor(allowed) {
+  if (allowed.length >= 3) return '';
+  if (allowed.length === 1) return 'rating:' + allowed[0];
+  const missing = ['s', 'q', 'e'].filter(k => allowed.indexOf(k) < 0)[0];
+  return missing ? '-rating:' + missing : '';
+}
+
 function uiSignature(cfg) {
   return [cfg.showInfo, cfg.debug].join('|');
 }
 
 function signature(cfg) {
-  return [cfg.tagsJoined, cfg.site, cfg.ratioLabel, cfg.ratingTag, cfg.minW].join('|');
+  return [cfg.tagsJoined, cfg.site, cfg.ratioLabel, cfg.ratingAllowed.join(''), cfg.minW].join('|');
 }
 
 function nextIso(minutes) {
@@ -368,12 +393,16 @@ function normalize(list, host) {
   }).filter(it => it.id && it.sample);
 }
 
-// 画幅按 sample 的实际宽高判断
+// 画幅按 sample 的实际宽高判断。
+// 方图放宽到 0.75~1.35：小组件是 cover 填充，轻微裁切看不出来，
+// 但可选素材能多一大截（4:3、5:4、4:5 这些都算方）
+const BAND = { landscape: 1.35, squareLow: 0.75 };
+
 function bandOf(it) {
   const ar = it.sampleW && it.sampleH ? it.sampleW / it.sampleH : 0;
   if (!ar) return '';
-  if (ar >= 1.4) return '横图';
-  if (ar >= 0.85) return '方图';
+  if (ar >= BAND.landscape) return '横图';
+  if (ar >= BAND.squareLow) return '方图';
   return '竖图';
 }
 

@@ -18,7 +18,7 @@ env_schema:
 
   RATIO_SMALL:
     name: 画幅·小号
-    description: "按图片实际宽高比判断：≥1.4 横图、0.85~1.4 方图、<0.85 竖图"
+    description: "按图片实际宽高比判断：≥1.35 横图、0.75~1.35 方图（近似方也算）、<0.75 竖图"
     options: ["方图", "横图", "竖图", "不限"]
   RATIO_MEDIUM:
     name: 画幅·中号
@@ -30,10 +30,18 @@ env_schema:
     name: 画幅·超大号（iPad）
     options: ["方图", "横图", "竖图", "不限"]
 
-  RATING:
-    name: 内容分级
-    description: "s=全年龄、q=擦边、e=工口。前三个是只保留一种，后两个是组合；都不喜欢就选「全部（含工口）」"
-    options: ["仅全年龄", "仅擦边", "仅工口", "全年龄 + 擦边", "全部（含工口）"]
+  SHOW_S:
+    name: 全年龄（s）
+    description: "rating:s。三个开关自由组合，至少留一个；全关掉会自动按「仅全年龄」处理，不会筛空"
+    options: ["true", "false"]
+  SHOW_Q:
+    name: 擦边（q）
+    description: "rating:q"
+    options: ["true", "false"]
+  SHOW_E:
+    name: 工口（e）
+    description: "rating:e。素材最少，单开时可能要多翻几页"
+    options: ["true", "false"]
 
   MIN_W:
     name: 最小短边
