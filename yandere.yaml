@@ -5,106 +5,115 @@ icon: photo.stack
 homepage: https://github.com/a13609y/yandere-widget
 manual: https://github.com/a13609y/yandere-widget#readme
 
+# 设置项按「内容 / 画幅 / 分级 / 过滤 / 显示」分五组，名字前缀就是分组名
 env_schema:
+  # ── 内容 ──────────────────────────────────────────────
   TAGS:
-    name: 标签
-    description: "yande.re 只有标签，没有全文搜索；多个标签是「同时满足」，用空格或逗号分隔（例如 blue_sky clouds）。留空 = 随机。常见标签：landscape、sky、clouds、hatsune_miku、original"
+    name: 内容 · 标签
+    description: "yande.re 只有标签、没有全文搜索；多个标签是「同时满足」，用空格或逗号分隔（blue_sky clouds）。留空 = 随机。中文也行：初音 → hatsune_miku。常见标签：landscape、sky、clouds、hatsune_miku"
     default_value: ""
 
   SITE:
-    name: 图源
-    description: "自动 = 先查 yande.re，标签没结果再试 Konachan（两边标签库不完全一样，比如 sky 在 yande.re 就没有）"
+    name: 内容 · 图源
+    description: "自动 = 先查 yande.re，没结果再试 Konachan（两边标签库不一样，sky 在 yande.re 就是 0 条）"
     options: ["自动", "yande.re", "Konachan"]
 
   SORT:
-    name: 排序
-    description: "随机 = 每次抽一批新的（推荐，最耐看）；热度 = 按全站评分从高到低（会偏老作品，实测首页多是 2015 年的图）；最新 = 按发布时间倒序"
+    name: 内容 · 排序
+    description: "随机 = 每次抽一批新的（推荐）；热度 = 全站评分降序（会偏老图）；最新 = 发布时间倒序"
     options: ["随机", "热度", "最新"]
 
   PERIOD:
-    name: 时段
-    description: "配合「随机/热度」用：只取最近这段时间发布的图（date:>YYYY-MM-DD）。选「最新」时自动忽略（本来就是时间倒序）。时段越短素材越少，「热度+一天内」可能几乎没图"
-    options: ["不限", "一天内", "一周内", "一个月内", "半年内"]
+    name: 内容 · 时段
+    description: "只取最近这段时间发布的图。配合「随机/热度」用；选「最新」时自动忽略。时段越短素材越少"
+    options: ["不限", "一天内", "一周内", "一个月内", "三个月内", "半年内", "一年内", "两年内", "三年内"]
 
+  MIN_SCORE:
+    name: 内容 · 最低评分
+    description: "评分低于这个值的直接跳过。0 = 不限制。配合「热度」用比较有意义（一周内的图普遍只有 40~60 分）"
+    options: ["0", "50", "100", "200", "500"]
+
+  # ── 画幅 ──────────────────────────────────────────────
   RATIO_SMALL:
-    name: 画幅·小号
-    description: "按图片实际宽高比判断：≥1.35 横图、0.75~1.35 方图（近似方也算）、<0.75 竖图"
+    name: 画幅 · 小号
+    description: "按实际宽高比：≥1.35 横图、0.75~1.35 方图（近似方也算）、<0.75 竖图"
     options: ["方图", "横图", "竖图", "不限"]
   RATIO_MEDIUM:
-    name: 画幅·中号
+    name: 画幅 · 中号
     options: ["方图", "横图", "竖图", "不限"]
   RATIO_LARGE:
-    name: 画幅·大号
+    name: 画幅 · 大号
     options: ["方图", "横图", "竖图", "不限"]
   RATIO_XLARGE:
-    name: 画幅·超大号（iPad）
+    name: 画幅 · 超大号（iPad）
     options: ["方图", "横图", "竖图", "不限"]
 
+  # ── 分级（s / q / e 三个独立开关，至少留一个）────────────
   SHOW_S:
-    name: 全年龄（s）
-    description: "rating:s。三个开关自由组合，至少留一个；全关掉会自动按「仅全年龄」处理，不会筛空"
+    name: 分级 · 全年龄（s）
+    description: "三个开关自由组合；全关掉会自动按「仅全年龄」处理，不会筛空"
     options: ["true", "false"]
   SHOW_Q:
-    name: 擦边（q）
-    description: "rating:q"
+    name: 分级 · 擦边（q）
     options: ["true", "false"]
   SHOW_E:
-    name: 工口（e）
-    description: "rating:e。素材最少，单开时可能要多翻几页"
+    name: 分级 · 工口（e）
+    description: "素材最少，单开时可能要多翻几页"
     options: ["true", "false"]
 
+  # ── 过滤 ──────────────────────────────────────────────
   MIN_W:
-    name: 最小短边
+    name: 过滤 · 最小短边
     description: "图片短边低于这个值的直接跳过，防止拿到糊图"
     options: ["720", "1024", "1280", "1500"]
 
   EX_NIPPLE:
-    name: 排除·露点（nipple / nipples）
-    description: "按 _ 分段匹配，所以 erect_nipples、puffy_nipples 这类也会一起排掉。yande.re 的 rating:s 并不保证没露点，建议一直开着"
+    name: 过滤 · 露点（nipple/nipples）
+    description: "按 _ 分段匹配，erect_nipples、puffy_nipples 也会一起排掉。yande.re 的 rating:s 并不保证没露点，建议一直开着"
     options: ["true", "false"]
   EX_PANTY:
-    name: 排除·胖次（panties）
+    name: 过滤 · 胖次（panties）
     options: ["true", "false"]
   EX_UNDERWEAR:
-    name: 排除·内衣（underwear / bra）
+    name: 过滤 · 内衣（underwear/bra）
     options: ["true", "false"]
   EX_SEETHROUGH:
-    name: 排除·透视（see_through）
+    name: 过滤 · 透视（see_through）
     options: ["true", "false"]
   EX_NUDE:
-    name: 排除·裸体（nude / topless）
+    name: 过滤 · 裸体（nude/topless）
     options: ["true", "false"]
   EX_CAMEL:
-    name: 排除·骆驼趾/张开腿（cameltoe / spread_legs）
+    name: 过滤 · 骆驼趾（cameltoe/spread_legs）
     options: ["true", "false"]
   EX_LOLI:
-    name: 排除·萝莉/正太（loli / shota）
+    name: 过滤 · 萝莉正太（loli/shota）
     description: "默认关闭；不看这类就打开，素材会少一截"
     options: ["true", "false"]
   EX_BONDAGE:
-    name: 排除·捆绑（bondage）
+    name: 过滤 · 捆绑（bondage）
     options: ["true", "false"]
   EXCLUDE_EXTRA:
-    name: 排除·自定义标签
-    description: "多个用逗号分隔（guro, vore）；标签内部的空格会自动转下划线（erect nipples → erect_nipples）。与上面开关叠加生效"
+    name: 过滤 · 自定义标签
+    description: "多个用逗号分隔（guro, vore）；标签内部的空格会自动转下划线（erect nipples → erect_nipples）"
     default_value: ""
 
+  # ── 显示 ──────────────────────────────────────────────
   COOLDOWN:
-    name: 换图间隔
-    description: "分钟，0 = 每次刷新都换"
+    name: 显示 · 换图间隔
+    description: "分钟，0 = 每次刷新都换（实际节奏受 iOS 刷新预算限制）"
     default_value: "30"
   NO_REPEAT:
-    name: 防重复窗口
+    name: 显示 · 防重复窗口
     description: "所有尺寸共用一份历史，显示过的作品在这 N 张内不会再出现"
     options: ["50", "100", "200", "500"]
-
   SHOW_INFO:
-    name: 显示分辨率
+    name: 显示 · 分辨率
     description: "左下角显示 分辨率 + 收藏数"
     options: ["true", "false"]
   DEBUG:
-    name: 调试角标
-    description: "显示版本/图源/比例/分级/体积/标签/搜索次数"
+    name: 显示 · 调试角标
+    description: "一行状态：版本/图源/比例/画幅/分级/体积/排序/时段/异常标记"
     options: ["true", "false"]
 
 scriptings:

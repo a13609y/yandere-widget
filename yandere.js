@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v2.2';
+const SCRIPT_VER = 'v2.3';
 
 const HOSTS = {
   yande: 'https://yande.re/post.json',
@@ -181,6 +181,7 @@ export default async function (ctx) {
   let errorStatus = null;
   let tagFallback = false;
   let periodRelaxed = false;
+  let scoreRelaxed = false;
 
   // 素材不够时继续翻页，最多 4 次：
   //   随机 → 每次换一个随机页（每页都是新的一批）
@@ -199,7 +200,7 @@ export default async function (ctx) {
       pool.sig = sig;
       writeJSON(ctx, poolKey, pool);
       candidate = pickFromPool(pool, historySet, cfg);
-      if (candidate) { tagFallback = res.tagFallback; periodRelaxed = res.periodRelaxed; break; }
+      if (candidate) { tagFallback = res.tagFallback; periodRelaxed = res.periodRelaxed; scoreRelaxed = res.scoreRelaxed; break; }
       if (res.empty || added.length === 0) break;
     } catch (e) {
       lastError = (e && e.message) || '搜索失败';
@@ -215,16 +216,24 @@ export default async function (ctx) {
 
   // ── 下载（sample 图：1500px 长边、200~500KB）─────────────────
   let img = null;
-  try {
-    img = await download(ctx, candidate.sample || candidate.file, cfg);
-  } catch (e) {
-    lastError = (e && e.message) || '图片下载失败';
-    if (e && (e.status === 429 || e.status === 403)) errorStatus = e.status;
+  let tries = 0;
+  while (!img && candidate && tries < 3) {
+    tries++;
+    try {
+      img = await download(ctx, candidate.sample || candidate.file, cfg);
+    } catch (e) {
+      lastError = (e && e.message) || '图片下载失败';
+      if (e && (e.status === 429 || e.status === 403)) { errorStatus = e.status; break; }
+      historySet.add(String(candidate.id));       // 这张下不下来，跳过换下一张
+      candidate = pickFromPool(pool, historySet, cfg);
+      if (candidate) writeJSON(ctx, poolKey, pool);
+    }
   }
 
   if (!img) {
-    if (cached && cached.dataUri) return buildWidget(cached, family, cfg, new Date(now + 10 * 60000).toISOString());
-    return buildError(lastError || '图片下载失败', cfg, new Date(now + 5 * 60000).toISOString());
+    const wait = errorStatus === 429 ? 45 : (errorStatus === 403 ? 20 : 10);
+    if (cached && cached.dataUri) return buildWidget(cached, family, cfg, new Date(now + wait * 60000).toISOString());
+    return buildError(lastError || '图片下载失败', cfg, new Date(now + Math.min(wait, 15) * 60000).toISOString());
   }
 
   const entry = {
@@ -241,6 +250,7 @@ export default async function (ctx) {
     queryTags: cfg.tagsJoined,
     tagFallback,
     periodRelaxed,
+    scoreRelaxed,
     searches,
     uiSig: uiSignature(cfg),
     sig,
@@ -308,7 +318,10 @@ function readConfig(env, family) {
   // 时段：yande.re 支持 date:>YYYY-MM-DD（也支持 date:A..B），不支持 age:
   // 「最新」本身就是时间倒序，时段没意义 → 忽略
   const periodLabel = s('PERIOD', '不限');
-  const periodDays = { '一天内': 1, '一周内': 7, '一个月内': 30, '半年内': 180 }[periodLabel] || 0;
+  const periodDays = {
+    '一天内': 1, '一周内': 7, '一个月内': 30, '三个月内': 90,
+    '半年内': 180, '一年内': 365, '两年内': 730, '三年内': 1095
+  }[periodLabel] || 0;
   const dateFilter = (periodDays > 0 && sort !== 'date') ? 'date:>' + ymdDaysAgo(periodDays) : '';
 
   // 排除标签：开关命中的 + 手填的
@@ -349,6 +362,7 @@ function readConfig(env, family) {
     // 防止「标签无结果→退回随机」时把没勾的等级漏进来
     ratingAllowed: allowed,
     minW: int('MIN_W', 1024, 200, 4000),
+    minScore: int('MIN_SCORE', 0, 0, 100000),
     cooldownMin: int('COOLDOWN', 30, 0, 24 * 60),
     maxHistory: int('NO_REPEAT', 100, 1, 2000),
     showInfo: bool('SHOW_INFO', true),
@@ -377,7 +391,7 @@ function uiSignature(cfg) {
 }
 
 function signature(cfg) {
-  return [cfg.tagsJoined, cfg.sort, cfg.dateFilter, cfg.site, cfg.ratioLabel, cfg.ratingAllowed.join(''), cfg.minW, cfg.excludeTags.join(',')].join('|');
+  return [cfg.tagsJoined, cfg.sort, cfg.dateFilter, cfg.site, cfg.ratioLabel, cfg.ratingAllowed.join(''), cfg.minW, cfg.minScore, cfg.excludeTags.join(',')].join('|');
 }
 
 function nextIso(minutes) {
@@ -446,6 +460,15 @@ async function search(ctx, cfg, page) {
       return { items: passed2, empty: passed2.length === 0, tagFallback: true, periodRelaxed: true };
     }
     return { items: [], empty: true, tagFallback: true, periodRelaxed: false };
+  }
+
+  // 最低评分卡太死 → 去掉它再试一次
+  if (triedEmpty && cfg.minScore > 0) {
+    const cfg3 = Object.assign({}, cfg, { minScore: 0 });
+    const url3 = HOSTS[hosts[0]] + '?tags=' + encodeURIComponent(buildTagString(cfg3, cfg.tags.length > 0)) + '&limit=100&page=' + pg;
+    const body3 = await fetchJson(ctx, url3, cfg);
+    const passed3 = normalize(body3, hosts[0]).filter(it => passesFilter(it, cfg3));
+    if (passed3.length) return { items: passed3, empty: false, tagFallback: false, periodRelaxed: false, scoreRelaxed: true };
   }
 
   // 没有标签但有时段且空 → 去掉时段再试一次
@@ -547,6 +570,8 @@ function passesFilter(it, cfg) {
   const shortSide = Math.min(it.sampleW || 0, it.sampleH || 0);
   if (shortSide && shortSide < cfg.minW * 0.6) return false;   // 太小的直接跳过
   if (it.sampleSize && it.sampleSize / 1024 > HARD_LIMIT_KB) return false;
+  if (cfg.minScore > 0 && (it.score || 0) < cfg.minScore) return false;   // 最低评分
+
   return true;
 }
 
@@ -631,6 +656,9 @@ function buildWidget(entry, family, cfg, refreshAfter) {
       text: entry.dim + (entry.score ? ' · ♥' + entry.score : ''),
       font: { size: 'caption1', weight: 'semibold' },
       textColor: '#FFFFFF',
+      shadowColor: 'rgba(0,0,0,0.55)',
+      shadowRadius: 3,
+      shadowOffset: { x: 0, y: 1 },
       maxLines: 1,
       minScale: 0.7
     });
@@ -639,12 +667,11 @@ function buildWidget(entry, family, cfg, refreshAfter) {
   if (cfg.debug) {
     lines.push({
       type: 'text',
-      text: `${SCRIPT_VER} ${entry.site} ${entry.ar || '-'} · ${cfg.ratioLabel} · ${entry.rating || '-'}`
-        + `${entry.tagFallback ? ' · ⚠标签无结果已随机' : ''}`
-        + `${entry.periodRelaxed ? ' · ⚠时段无图已放宽' : ''}`
-        + `${entry.sizeKb ? ' · ' + entry.sizeKb + 'KB' : ''}`
-        + ` · ${cfg.sortLabel}${cfg.dateFilter ? '/' + cfg.periodLabel : (cfg.periodLabel !== '不限' ? '/时段被忽略' : '')}`
-        + ` · ${entry.queryTags ? '「' + entry.queryTags + '」' : '随机'} · ${entry.searches}搜`,
+      text: `${SCRIPT_VER} ${entry.site} ${entry.ar || '-'} ${cfg.ratioLabel} ${entry.rating || '-'}`
+        + `${entry.sizeKb ? ' ' + entry.sizeKb + 'KB' : ''}`
+        + ` ${cfg.sortLabel}${cfg.dateFilter ? '/' + cfg.periodLabel : ''}`
+        + `${entry.tagFallback ? ' ⚠标签' : ''}${entry.periodRelaxed ? ' ⚠时段' : ''}${entry.scoreRelaxed ? ' ⚠评分' : ''}`
+        + `${entry.queryTags ? ' 「' + entry.queryTags + '」' : ''} ${entry.searches}搜`,
       font: { size: 'caption2' },
       textColor: 'rgba(255,255,255,0.55)',
       maxLines: 1
