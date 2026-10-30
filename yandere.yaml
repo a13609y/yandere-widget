@@ -36,17 +36,17 @@ env_schema:
   # ── 画幅 ──────────────────────────────────────────────
   RATIO_SMALL:
     name: 画幅 · 小号
-    description: "智能 = 按「塞进这个尺寸会裁掉多少」来筛：严格 ≤20%、标准 ≤35%、宽松 ≤50%。也可以强制要求横/方/竖（老逻辑）"
-    options: ["智能·标准", "智能·严格", "智能·宽松", "横图", "方图", "竖图", "不限"]
+    description: "按实际宽高比：≥1.35 横图、0.75~1.35 方图（近似方也算）、<0.75 竖图"
+    options: ["方图", "横图", "竖图", "不限"]
   RATIO_MEDIUM:
     name: 画幅 · 中号
-    options: ["智能·标准", "智能·严格", "智能·宽松", "横图", "方图", "竖图", "不限"]
+    options: ["方图", "横图", "竖图", "不限"]
   RATIO_LARGE:
     name: 画幅 · 大号
-    options: ["智能·标准", "智能·严格", "智能·宽松", "横图", "方图", "竖图", "不限"]
+    options: ["方图", "横图", "竖图", "不限"]
   RATIO_XLARGE:
     name: 画幅 · 超大号（iPad）
-    options: ["智能·标准", "智能·严格", "智能·宽松", "横图", "方图", "竖图", "不限"]
+    options: ["方图", "横图", "竖图", "不限"]
 
   # ── 分级（s / q / e 三个独立开关，至少留一个）────────────
   SHOW_S:
@@ -102,7 +102,7 @@ env_schema:
     options: ["true", "false"]
   EX_PLAINBG:
     name: 过滤 · 白底/纯色底
-    description: "white_background / simple_background / transparent_background。打开会明显减少素材（这类标签很常见），默认关"
+    description: "white_background / transparent_background（已排除 simple_background，因为它太常见）"
     options: ["true", "false"]
   EXCLUDE_EXTRA:
     name: 过滤 · 自定义标签

@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v3.0';
+const SCRIPT_VER = 'v3.1';
 
 const HOSTS = {
   yande: 'https://yande.re/post.json',
@@ -133,24 +133,8 @@ const EXCLUDE_PRESETS = [
   // 构图类：在小组件里必然难看的存在
   { key: 'EX_PANEL', tags: ['comic', '4koma', '2koma', 'multiple_views', 'collage'] },
   { key: 'EX_SKETCH', tags: ['sketch_page', 'reference_sheet', 'character_sheet'] },
-  { key: 'EX_PLAINBG', tags: ['white_background', 'simple_background', 'transparent_background'] }
+  { key: 'EX_PLAINBG', tags: ['white_background', 'transparent_background'] }
 ];
-
-// 各尺寸容器的宽高比（cover 填充时用来算裁切损失）
-const CONTAINER_AR = {
-  systemSmall: 1.0,
-  systemMedium: 2.1,
-  systemLarge: 1.0,
-  systemExtraLarge: 2.0
-};
-
-// 裁切损失：图塞进容器时会被裁掉多少（0 = 完全不裁）
-function cropLoss(ar, target) {
-  if (!ar || !target) return 1;
-  return 1 - Math.min(ar, target) / Math.max(ar, target);
-}
-
-const SMART_TOL = { '智能·严格': 0.20, '智能·标准': 0.35, '智能·宽松': 0.50 };
 
 const MAX_POOL = 80;
 const HARD_LIMIT_KB = 1200;   // 单张超过这个体积就跳过（iOS 桌面画不出来）
@@ -331,11 +315,7 @@ function readConfig(env, family) {
 
   const ownKey = RATIO_BY_FAMILY[family];
   const ratioLabel = s(ownKey, '') || DEFAULT_RATIO[family] || '智能·标准';
-  const targetAr = CONTAINER_AR[family] || 1.0;
-  const smartTol = SMART_TOL[ratioLabel];                        // 智能模式：容忍的裁切比例
-  const ratioMode = smartTol === undefined
-    ? (ratioLabel === '不限' ? 'any' : 'band')                   // 横图/方图/竖图/不限
-    : 'smart';
+  const ratioMode = ratioLabel === '不限' ? 'any' : 'band';
 
   const sortLabel = s('SORT', '随机');
   const sort = /热度|score/i.test(sortLabel) ? 'score' : (/最新|date/i.test(sortLabel) ? 'date' : 'random');
@@ -382,8 +362,6 @@ function readConfig(env, family) {
     excludeTags,
     ratioLabel,
     ratioMode,
-    smartTol: smartTol === undefined ? 0.35 : smartTol,
-    targetAr,
     ratingLabel: allowed.map(x => x === 's' ? '全年龄' : x === 'q' ? '擦边' : '工口').join('+'),
     ratingTag: ratingTagFor(allowed),
     // 服务端标签只是第一道闸；本地再校验一次，
@@ -419,7 +397,7 @@ function uiSignature(cfg) {
 }
 
 function signature(cfg) {
-  return [cfg.tagsJoined, cfg.sort, cfg.dateFilter, cfg.site, cfg.ratioLabel, cfg.smartTol, cfg.ratingAllowed.join(''), cfg.minW, cfg.minScore, cfg.excludeTags.join(',')].join('|');
+  return [cfg.tagsJoined, cfg.sort, cfg.dateFilter, cfg.site, cfg.ratioLabel, cfg.ratingAllowed.join(''), cfg.minW, cfg.minScore, cfg.excludeTags.join(',')].join('|');
 }
 
 function nextIso(minutes) {
@@ -593,10 +571,7 @@ function hitsExclude(tags, excludes) {
 function passesFilter(it, cfg) {
   if (it.rating && cfg.ratingAllowed.indexOf(it.rating) < 0) return false;   // 分级兜底
   if (cfg.excludeTags.length && hitsExclude(it.tags, cfg.excludeTags)) return false;
-  const ar = it.sampleW && it.sampleH ? it.sampleW / it.sampleH : 0;
-  if (cfg.ratioMode === 'smart') {
-    if (ar && cropLoss(ar, cfg.targetAr) > cfg.smartTol) return false;   // 裁切超过容忍度就跳过
-  } else if (cfg.ratioMode === 'band') {
+  if (cfg.ratioMode === 'band') {
     const band = bandOf(it);
     if (band && band !== cfg.ratioLabel) return false;
   }
@@ -610,21 +585,11 @@ function passesFilter(it, cfg) {
 
 /* ============================ 选图 ============================ */
 
-// 按「离容器比例多近」排序，取前 5 张随机挑一张：
-// 既有变化，又保证每张都接近理想比例（而不是池子里随便抓）
 function pickFromPool(pool, historySet, cfg) {
   if (!pool || !Array.isArray(pool.items) || pool.items.length === 0) return null;
   const fresh = pool.items.filter(it => it && it.sample && !historySet.has(String(it.id)));
   if (fresh.length === 0) return null;
-
-  const target = cfg.targetAr || 1;
-  const scored = fresh.map(it => {
-    const ar = it.sampleW && it.sampleH ? it.sampleW / it.sampleH : 0;
-    return { it, score: ar > 0 ? Math.abs(Math.log(ar / target)) : 9 };
-  }).sort((a, b) => a.score - b.score);
-
-  const head = scored.slice(0, Math.min(5, scored.length));
-  const picked = head[Math.floor(Math.random() * head.length)].it;
+  const picked = fresh[Math.floor(Math.random() * fresh.length)];
   pool.items = pool.items.filter(it => it !== picked);
   return picked;
 }
