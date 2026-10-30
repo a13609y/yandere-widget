@@ -59,8 +59,8 @@ env_schema:
     options: ["720", "1024", "1280", "1500"]
 
   EX_NIPPLE:
-    name: 排除·露点（nipples）
-    description: "命中标签就跳过。yande.re 的 rating:s 并不保证没露点，这一项建议一直开着"
+    name: 排除·露点（nipple / nipples）
+    description: "按 _ 分段匹配，所以 erect_nipples、puffy_nipples 这类也会一起排掉。yande.re 的 rating:s 并不保证没露点，建议一直开着"
     options: ["true", "false"]
   EX_PANTY:
     name: 排除·胖次（panties）
@@ -86,7 +86,7 @@ env_schema:
     options: ["true", "false"]
   EXCLUDE_EXTRA:
     name: 排除·自定义标签
-    description: "手填英文标签，空格或逗号分隔，例如: guro vore; 与上面开关叠加生效"
+    description: "多个用逗号分隔（guro, vore）；标签内部的空格会自动转下划线（erect nipples → erect_nipples）。与上面开关叠加生效"
     default_value: ""
 
   COOLDOWN:
