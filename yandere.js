@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v1.7';
+const SCRIPT_VER = 'v1.9';
 
 const HOSTS = {
   yande: 'https://yande.re/post.json',
@@ -45,6 +45,41 @@ const K = {
   lastShow: 'yd_lastshow_',  // + family
   debug: 'yd_debug'
 };
+
+// yande.re / Konachan 的标签全是英文（罗马字），中文直接查是 0 条。
+// 这里放一张常用中文→标签的别名表，命中的会自动替换；没命中的原样发出去（然后再回退随机）
+const TAG_ALIAS = {
+  '初音': 'hatsune_miku', '初音未来': 'hatsune_miku', 'miku': 'hatsune_miku',
+  '天空': 'sky', '蓝天': 'sky', '云': 'clouds', '白云': 'clouds',
+  '风景': 'scenery', '景色': 'scenery', '山': 'mountain', '瀑布': 'waterfall',
+  '少女': 'girl', '女孩': 'girl', '妹子': 'girl',
+  '猫耳': 'cat_ears', '猫娘': 'catgirl', '兽耳': 'animal_ears', '尾巴': 'tail',
+  '泳装': 'swimsuit', '泳衣': 'swimsuit', '比基尼': 'bikini', '泳池': 'swimming_pool',
+  '女仆': 'maid', '和服': 'kimono', '浴衣': 'yukata', '制服': 'uniform', '水手服': 'serafuku', '校服': 'school_uniform',
+  '樱花': 'cherry_blossoms', '花': 'flower', '花朵': 'flower',
+  '黑丝': 'black_pantyhose', '白丝': 'white_pantyhose', '丝袜': 'pantyhose',
+  '长发': 'long_hair', '短发': 'short_hair', '双马尾': 'twintails', '马尾': 'ponytail',
+  '眼镜': 'glasses', '帽子': 'hat', '翅膀': 'wings', '尾巴尖': 'tail',
+  '剑': 'sword', '刀': 'katana', '枪': 'gun', '机甲': 'mecha',
+  '魔法': 'magic', '魔法少女': 'mahou_shoujo', '天使': 'angel', '恶魔': 'demon', '精灵': 'elf',
+  '海': 'ocean', '海边': 'beach', '水': 'water', '湖': 'lake',
+  '夜晚': 'night', '夜景': 'night', '星空': 'starry_sky', '月亮': 'moon',
+  '雨': 'rain', '雪': 'snow', '秋天': 'autumn', '夏天': 'summer', '冬天': 'winter', '春天': 'spring',
+  '烟花': 'fireworks', '花火': 'fireworks', '灯笼': 'lantern',
+  '睡衣': 'pajamas', '内衣': 'underwear', '袜': 'socks', '过膝袜': 'thighhighs',
+  '萝莉': 'loli', '御姐': 'mature_female', '正太': 'shota'
+};
+
+function normalizeTag(tag) {
+  const key = String(tag || '').trim();
+  if (!key) return '';
+  const lower = key.toLowerCase();
+  if (TAG_ALIAS[key]) return TAG_ALIAS[key];
+  if (TAG_ALIAS[lower]) return TAG_ALIAS[lower];
+  // 中文但没收录 → 没法查，直接丢掉（免得整串变 0 条），后面会回退随机
+  if (/[\u4e00-\u9fa5]/.test(key)) return '';
+  return key.replace(/\s+/g, '_');
+}
 
 const RATIO_BY_FAMILY = {
   systemSmall: 'RATIO_SMALL',
@@ -120,7 +155,8 @@ export default async function (ctx) {
   const poolKey = K.pool + cfg.ratioLabel;
   let pool = readJSON(ctx, poolKey) || {};
   if (!Array.isArray(pool.items)) pool.items = [];
-  if (pool.sig !== sig) pool = { items: [], sig };
+  if (pool.sig !== sig) pool = { items: [], page: 1, sig };
+  if (!pool.page) pool.page = 1;
 
   let history = readJSON(ctx, K.history);
   if (!Array.isArray(history)) history = [];
@@ -132,10 +168,16 @@ export default async function (ctx) {
   let errorStatus = null;
   let tagFallback = false;
 
-  // 素材不够时继续翻页：每次换一页（order:random 下每页是不同的一批），最多 4 次
+  // 素材不够时继续翻页，最多 4 次：
+  //   随机 → 每次换一个随机页（每页都是新的一批）
+  //   热度/最新 → 按 1..10 页顺序往后翻（排序稳定，翻页才有意义）
   while (!candidate && searches < 4) {
     try {
-      const res = await search(ctx, cfg, searches + 1);
+      const page = cfg.sort === 'random'
+        ? 1 + Math.floor(Math.random() * 3)
+        : Math.max(1, pool.page || 1);
+      const res = await search(ctx, cfg, page);
+      if (cfg.sort !== 'random') pool.page = page >= 10 ? 1 : page + 1;
       searches++;
       const have = new Set(pool.items.map(it => String(it.id)));
       const added = res.items.filter(it => !have.has(String(it.id)));
@@ -245,17 +287,24 @@ function readConfig(env, family) {
   const ownKey = RATIO_BY_FAMILY[family];
   const ratioLabel = s(ownKey, '') || DEFAULT_RATIO[family] || '横图';
 
+  const sortLabel = s('SORT', '随机');
+  const sort = /热度|score/i.test(sortLabel) ? 'score' : (/最新|date/i.test(sortLabel) ? 'date' : 'random');
+
   const siteLabel = s('SITE', '自动');
   const site = /konachan/i.test(siteLabel) ? 'konachan' : (/yande/i.test(siteLabel) ? 'yande' : 'auto');
 
   const rawTags = s('TAGS', '')
     .split(/[\s,，、|]+/)
     .map(x => x.trim())
+    .filter(Boolean)
+    .map(normalizeTag)
     .filter(Boolean);
 
   return {
     tags: rawTags,
     tagsJoined: rawTags.join(' '),
+    sort,
+    sortLabel: sort === 'score' ? '热度' : (sort === 'date' ? '最新' : '随机'),
     site,
     ratioLabel,
     ratingLabel: allowed.map(x => x === 's' ? '全年龄' : x === 'q' ? '擦边' : '工口').join('+'),
@@ -285,7 +334,7 @@ function uiSignature(cfg) {
 }
 
 function signature(cfg) {
-  return [cfg.tagsJoined, cfg.site, cfg.ratioLabel, cfg.ratingAllowed.join(''), cfg.minW].join('|');
+  return [cfg.tagsJoined, cfg.sort, cfg.site, cfg.ratioLabel, cfg.ratingAllowed.join(''), cfg.minW].join('|');
 }
 
 function nextIso(minutes) {
@@ -309,7 +358,7 @@ function hostsFor(cfg) {
 // 如果先拼 '+' 再编码，'+' 会变成 %2B（字面加号），服务端就不当作分隔符了——
 // 整个串被当成一个不存在的标签，返回一堆随机图，分级/标签筛选全部失效。
 function buildTagString(cfg, useTags) {
-  const parts = ['order:random'];                 // 必须第一个，否则随机失效
+  const parts = ['order:' + (cfg.sort || 'random')];   // 必须第一个，否则排序失效
   if (useTags && cfg.tags.length) parts.push(...cfg.tags);
   if (cfg.ratingTag) parts.push(cfg.ratingTag);
   return parts.join(' ');

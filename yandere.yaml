@@ -16,6 +16,11 @@ env_schema:
     description: "自动 = 先查 yande.re，标签没结果再试 Konachan（两边标签库不完全一样，比如 sky 在 yande.re 就没有）"
     options: ["自动", "yande.re", "Konachan"]
 
+  SORT:
+    name: 排序
+    description: "随机 = 每次抽一批新的（推荐，最耐看）；热度 = 按全站评分从高到低（会偏老作品，实测首页多是 2015 年的图）；最新 = 按发布时间倒序"
+    options: ["随机", "热度", "最新"]
+
   RATIO_SMALL:
     name: 画幅·小号
     description: "按图片实际宽高比判断：≥1.35 横图、0.75~1.35 方图（近似方也算）、<0.75 竖图"
