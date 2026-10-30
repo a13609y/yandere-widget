@@ -36,7 +36,7 @@
  * DEBUG       左下角状态角标                                    默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v1.1';
+const SCRIPT_VER = 'v1.3';
 
 const API = 'https://wallhaven.cc/api/v1/search';
 
@@ -261,12 +261,14 @@ function readConfig(env, family) {
   const sortLabel = s('SORT', '相关度');
   const sort = keyword ? (SORT_MAP[sortLabel] || 'relevance') : 'random';
 
-  const qualityLabel = s('QUALITY', '省流');
+  const qualityLabel = s('QUALITY', '自动');
   // 每个档位对应「原图」的大小上限（KB）；超了就先换一张，实在没有才用缩略图
-  // thumb = 直接只要 432px 缩略图（约 25KB），用来排查「桌面上不显示」
-  const quality = /缩略|thumb/i.test(qualityLabel) ? 'thumb'
+  // thumb = 只要 432px 缩略图（约 25KB）。小号 510px 宽，缩略图够；中大号要 1090px，会糊
+  let quality = /缩略|thumb/i.test(qualityLabel) ? 'thumb'
     : /省流|小/i.test(qualityLabel) ? 'slim'
-    : /高清|大/i.test(qualityLabel) ? 'full' : 'std';
+    : /高清|大/i.test(qualityLabel) ? 'full'
+    : /标准/i.test(qualityLabel) ? 'std' : 'auto';
+  if (quality === 'auto') quality = family === 'systemSmall' ? 'thumb' : 'slim';
   const capKb = quality === 'thumb' ? 60 : quality === 'slim' ? 450 : quality === 'full' ? 2500 : 900;
 
   return {
@@ -404,8 +406,22 @@ function pickFromPool(pool, historySet, cfg) {
   if (fresh.length === 0) return null;
 
   const small = fresh.filter(it => sizeOk(it, cfg));
-  const list = small.length ? small : fresh;
-  const picked = list[Math.floor(Math.random() * list.length)];
+  if (small.length === 0) return null;           // 这一页没有够小的，让外层再翻页
+
+  // 小组件只需要 1000~1600 像素宽：优先「原生宽度适中 + 文件小 + 不是 PNG」的原图，
+  // 这样不用压缩也很清晰，整包体积还压得住
+  const TARGET_W = 1400;
+  const scored = small.map(it => {
+    const w = it.w || TARGET_W;
+    const wScore = Math.abs(Math.log(w / TARGET_W));       // 越接近 1400 宽越好
+    const sScore = (it.size || cfg.capKb * 1024) / (cfg.capKb * 1024);  // 越小越好
+    const pngPenalty = /\.png$/i.test(it.path) ? 0.8 : 0;   // png 同样的画质通常大好几倍
+    return { it, score: wScore + sScore * 0.6 + pngPenalty };
+  }).sort((a, b) => a.score - b.score);
+
+  // 在最好的几千里随机，避免每次都挑同一张
+  const head = scored.slice(0, Math.min(5, scored.length));
+  const picked = head[Math.floor(Math.random() * head.length)].it;
   pool.items = pool.items.filter(it => it !== picked);
   return picked;
 }
