@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v1.9';
+const SCRIPT_VER = 'v2.0';
 
 const HOSTS = {
   yande: 'https://yande.re/post.json',
@@ -167,6 +167,7 @@ export default async function (ctx) {
   let lastError = '';
   let errorStatus = null;
   let tagFallback = false;
+  let periodRelaxed = false;
 
   // 素材不够时继续翻页，最多 4 次：
   //   随机 → 每次换一个随机页（每页都是新的一批）
@@ -185,7 +186,7 @@ export default async function (ctx) {
       pool.sig = sig;
       writeJSON(ctx, poolKey, pool);
       candidate = pickFromPool(pool, historySet, cfg);
-      if (candidate) { tagFallback = res.tagFallback; break; }
+      if (candidate) { tagFallback = res.tagFallback; periodRelaxed = res.periodRelaxed; break; }
       if (res.empty || added.length === 0) break;
     } catch (e) {
       lastError = (e && e.message) || '搜索失败';
@@ -226,6 +227,7 @@ export default async function (ctx) {
     tags: (candidate.tags || '').split(' ').slice(0, 6).join(' '),
     queryTags: cfg.tagsJoined,
     tagFallback,
+    periodRelaxed,
     searches,
     uiSig: uiSignature(cfg),
     sig,
@@ -290,6 +292,12 @@ function readConfig(env, family) {
   const sortLabel = s('SORT', '随机');
   const sort = /热度|score/i.test(sortLabel) ? 'score' : (/最新|date/i.test(sortLabel) ? 'date' : 'random');
 
+  // 时段：yande.re 支持 date:>YYYY-MM-DD（也支持 date:A..B），不支持 age:
+  // 「最新」本身就是时间倒序，时段没意义 → 忽略
+  const periodLabel = s('PERIOD', '不限');
+  const periodDays = { '一天内': 1, '一周内': 7, '一个月内': 30, '半年内': 180 }[periodLabel] || 0;
+  const dateFilter = (periodDays > 0 && sort !== 'date') ? 'date:>' + ymdDaysAgo(periodDays) : '';
+
   const siteLabel = s('SITE', '自动');
   const site = /konachan/i.test(siteLabel) ? 'konachan' : (/yande/i.test(siteLabel) ? 'yande' : 'auto');
 
@@ -306,6 +314,8 @@ function readConfig(env, family) {
     sort,
     sortLabel: sort === 'score' ? '热度' : (sort === 'date' ? '最新' : '随机'),
     site,
+    periodLabel,
+    dateFilter,
     ratioLabel,
     ratingLabel: allowed.map(x => x === 's' ? '全年龄' : x === 'q' ? '擦边' : '工口').join('+'),
     ratingTag: ratingTagFor(allowed),
@@ -322,6 +332,13 @@ function readConfig(env, family) {
 }
 
 // 由选中的等级集合反推服务端标签：全选=不传；选一个=rating:x；选两个=排除第三个
+function ymdDaysAgo(days) {
+  const d = new Date(Date.now() - days * 24 * 3600 * 1000);
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+
 function ratingTagFor(allowed) {
   if (allowed.length >= 3) return '';
   if (allowed.length === 1) return 'rating:' + allowed[0];
@@ -334,7 +351,7 @@ function uiSignature(cfg) {
 }
 
 function signature(cfg) {
-  return [cfg.tagsJoined, cfg.sort, cfg.site, cfg.ratioLabel, cfg.ratingAllowed.join(''), cfg.minW].join('|');
+  return [cfg.tagsJoined, cfg.sort, cfg.dateFilter, cfg.site, cfg.ratioLabel, cfg.ratingAllowed.join(''), cfg.minW].join('|');
 }
 
 function nextIso(minutes) {
@@ -361,6 +378,7 @@ function buildTagString(cfg, useTags) {
   const parts = ['order:' + (cfg.sort || 'random')];   // 必须第一个，否则排序失效
   if (useTags && cfg.tags.length) parts.push(...cfg.tags);
   if (cfg.ratingTag) parts.push(cfg.ratingTag);
+  if (cfg.dateFilter) parts.push(cfg.dateFilter);
   return parts.join(' ');
 }
 
@@ -386,15 +404,34 @@ async function search(ctx, cfg, page) {
     triedEmpty = true;
   }
 
-  // 标签组合全空：退回「只要分级 + 随机」，避免组件空着
+  // 回退①：标签组合全空 → 去掉用户标签，只留排序 + 分级 + 时段
   if (triedEmpty && cfg.tags.length) {
     const url = HOSTS[hosts[0]] + '?tags=' + encodeURIComponent(buildTagString(cfg, false)) + '&limit=100&page=' + pg;
     const body = await fetchJson(ctx, url, cfg);
     const passed = normalize(body, hosts[0]).filter(it => passesFilter(it, cfg));
-    return { items: passed, empty: passed.length === 0, tagFallback: true };
+    if (passed.length) return { items: passed, empty: false, tagFallback: true, periodRelaxed: false };
+
+    // 回退②：连时段也无图（比如「热度 + 一天内」）→ 再去掉时段，只留排序 + 分级
+    if (cfg.dateFilter) {
+      const cfg2 = Object.assign({}, cfg, { dateFilter: '' });
+      const url2 = HOSTS[hosts[0]] + '?tags=' + encodeURIComponent(buildTagString(cfg2, false)) + '&limit=100&page=' + pg;
+      const body2 = await fetchJson(ctx, url2, cfg);
+      const passed2 = normalize(body2, hosts[0]).filter(it => passesFilter(it, cfg));
+      return { items: passed2, empty: passed2.length === 0, tagFallback: true, periodRelaxed: true };
+    }
+    return { items: [], empty: true, tagFallback: true, periodRelaxed: false };
   }
 
-  return { items: [], empty: true, tagFallback: false };
+  // 没有标签但有时段且空 → 去掉时段再试一次
+  if (triedEmpty && cfg.dateFilter) {
+    const cfg2 = Object.assign({}, cfg, { dateFilter: '' });
+    const url2 = HOSTS[hosts[0]] + '?tags=' + encodeURIComponent(buildTagString(cfg2, false)) + '&limit=100&page=' + pg;
+    const body2 = await fetchJson(ctx, url2, cfg);
+    const passed2 = normalize(body2, hosts[0]).filter(it => passesFilter(it, cfg));
+    return { items: passed2, empty: passed2.length === 0, tagFallback: false, periodRelaxed: true };
+  }
+
+  return { items: [], empty: true, tagFallback: false, periodRelaxed: false };
 }
 
 async function fetchJson(ctx, url, cfg) {
@@ -556,7 +593,9 @@ function buildWidget(entry, family, cfg, refreshAfter) {
       type: 'text',
       text: `${SCRIPT_VER} ${entry.site} ${entry.ar || '-'} · ${cfg.ratioLabel} · ${entry.rating || '-'}`
         + `${entry.tagFallback ? ' · ⚠标签无结果已随机' : ''}`
+        + `${entry.periodRelaxed ? ' · ⚠时段无图已放宽' : ''}`
         + `${entry.sizeKb ? ' · ' + entry.sizeKb + 'KB' : ''}`
+        + ` · ${cfg.sortLabel}${cfg.dateFilter ? '/' + cfg.periodLabel : (cfg.periodLabel !== '不限' ? '/时段被忽略' : '')}`
         + ` · ${entry.queryTags ? '「' + entry.queryTags + '」' : '随机'} · ${entry.searches}搜`,
       font: { size: 'caption2' },
       textColor: 'rgba(255,255,255,0.55)',
