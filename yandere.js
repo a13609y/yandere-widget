@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v2.0';
+const SCRIPT_VER = 'v2.1';
 
 const HOSTS = {
   yande: 'https://yande.re/post.json',
@@ -118,6 +118,19 @@ const RATING_ALLOWED = {
   '全年龄 + 擦边': ['s', 'q'],
   '全部（含工口）': ['s', 'q', 'e']
 };
+
+// 排除用的敏感标签。yande.re 的 -tag 反选实测无效（只对 rating: 这类元标签生效），
+// 所以只能抓回来后在本地按标签精确匹配剔除
+const EXCLUDE_PRESETS = [
+  { key: 'EX_NIPPLE', tags: ['nipples'] },
+  { key: 'EX_PANTY', tags: ['panties'] },
+  { key: 'EX_UNDERWEAR', tags: ['underwear', 'bra'] },
+  { key: 'EX_SEETHROUGH', tags: ['see_through'] },
+  { key: 'EX_NUDE', tags: ['nude', 'topless', 'completely_nude'] },
+  { key: 'EX_LOLI', tags: ['loli', 'shota'] },
+  { key: 'EX_CAMEL', tags: ['cameltoe', 'spread_legs'] },
+  { key: 'EX_BONDAGE', tags: ['bondage'] }
+];
 
 const MAX_POOL = 80;
 const HARD_LIMIT_KB = 1200;   // 单张超过这个体积就跳过（iOS 桌面画不出来）
@@ -298,6 +311,18 @@ function readConfig(env, family) {
   const periodDays = { '一天内': 1, '一周内': 7, '一个月内': 30, '半年内': 180 }[periodLabel] || 0;
   const dateFilter = (periodDays > 0 && sort !== 'date') ? 'date:>' + ymdDaysAgo(periodDays) : '';
 
+  // 排除标签：开关命中的 + 手填的
+  const excludeTags = (() => {
+    const out = [];
+    EXCLUDE_PRESETS.forEach(p => { if (bool(p.key, false)) out.push(...p.tags); });
+    s('EXCLUDE_EXTRA', '')
+      .split(/[\s,，、|]+/)
+      .map(x => x.trim().toLowerCase().replace(/\s+/g, '_'))
+      .filter(Boolean)
+      .forEach(t => out.push(t));
+    return Array.from(new Set(out));
+  })();
+
   const siteLabel = s('SITE', '自动');
   const site = /konachan/i.test(siteLabel) ? 'konachan' : (/yande/i.test(siteLabel) ? 'yande' : 'auto');
 
@@ -316,6 +341,7 @@ function readConfig(env, family) {
     site,
     periodLabel,
     dateFilter,
+    excludeTags,
     ratioLabel,
     ratingLabel: allowed.map(x => x === 's' ? '全年龄' : x === 'q' ? '擦边' : '工口').join('+'),
     ratingTag: ratingTagFor(allowed),
@@ -351,7 +377,7 @@ function uiSignature(cfg) {
 }
 
 function signature(cfg) {
-  return [cfg.tagsJoined, cfg.sort, cfg.dateFilter, cfg.site, cfg.ratioLabel, cfg.ratingAllowed.join(''), cfg.minW].join('|');
+  return [cfg.tagsJoined, cfg.sort, cfg.dateFilter, cfg.site, cfg.ratioLabel, cfg.ratingAllowed.join(''), cfg.minW, cfg.excludeTags.join(',')].join('|');
 }
 
 function nextIso(minutes) {
@@ -494,6 +520,12 @@ function bandOf(it) {
 
 function passesFilter(it, cfg) {
   if (it.rating && cfg.ratingAllowed.indexOf(it.rating) < 0) return false;   // 分级兜底
+  if (cfg.excludeTags.length) {                                            // 排除标签（精确匹配 token）
+    const set = new Set(String(it.tags || '').toLowerCase().split(' '));
+    for (let i = 0; i < cfg.excludeTags.length; i++) {
+      if (set.has(cfg.excludeTags[i])) return false;
+    }
+  }
   const band = bandOf(it);
   if (cfg.ratioLabel !== '不限' && band && band !== cfg.ratioLabel) return false;
   const shortSide = Math.min(it.sampleW || 0, it.sampleH || 0);

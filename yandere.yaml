@@ -58,6 +58,37 @@ env_schema:
     description: "图片短边低于这个值的直接跳过，防止拿到糊图"
     options: ["720", "1024", "1280", "1500"]
 
+  EX_NIPPLE:
+    name: 排除·露点（nipples）
+    description: "命中标签就跳过。yande.re 的 rating:s 并不保证没露点，这一项建议一直开着"
+    options: ["true", "false"]
+  EX_PANTY:
+    name: 排除·胖次（panties）
+    options: ["true", "false"]
+  EX_UNDERWEAR:
+    name: 排除·内衣（underwear / bra）
+    options: ["true", "false"]
+  EX_SEETHROUGH:
+    name: 排除·透视（see_through）
+    options: ["true", "false"]
+  EX_NUDE:
+    name: 排除·裸体（nude / topless）
+    options: ["true", "false"]
+  EX_CAMEL:
+    name: 排除·骆驼趾/张开腿（cameltoe / spread_legs）
+    options: ["true", "false"]
+  EX_LOLI:
+    name: 排除·萝莉/正太（loli / shota）
+    description: "默认关闭；不看这类就打开，素材会少一截"
+    options: ["true", "false"]
+  EX_BONDAGE:
+    name: 排除·捆绑（bondage）
+    options: ["true", "false"]
+  EXCLUDE_EXTRA:
+    name: 排除·自定义标签
+    description: "手填英文标签，空格或逗号分隔，例如: guro vore; 与上面开关叠加生效"
+    default_value: ""
+
   COOLDOWN:
     name: 换图间隔
     description: "分钟，0 = 每次刷新都换"
