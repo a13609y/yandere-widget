@@ -1,7 +1,7 @@
 name: yande.re 动漫图
 description: 从 yande.re / Konachan 按标签取动漫插画，按小组件尺寸匹配画幅；免登录，sample 图 1500px 体积小
 author: Cuttlefish
-icon: photo.stack
+icon: https://raw.githubusercontent.com/a13609y/yandere-widget/main/icon.png
 homepage: https://github.com/a13609y/yandere-widget
 manual: https://github.com/a13609y/yandere-widget#readme
 
