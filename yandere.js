@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v3.2';
+const SCRIPT_VER = 'v3.3';
 
 // konachan 有两个域名：.net 是纯净镜像（只有 s），.com 才含 q/e。
 // 勾了擦边/工口就自动换 .com，只勾全年龄就用 .net。
@@ -89,6 +89,12 @@ function normalizeTag(tag) {
   if (/[\u4e00-\u9fa5]/.test(key)) return '';
   return key.replace(/\s+/g, '_');
 }
+
+// 画幅判定的两套区间
+//   宽松：老逻辑，≥1.35 横、0.75~1.35 方、<0.75 竖
+//   严格：按「理想比例 ±10%」——横 1.78±10%、方 1.00±10%、竖 0.71±10%
+const BAND_LOOSE = { '横图': [1.35, 99], '方图': [0.75, 1.35], '竖图': [0, 0.75] };
+const BAND_STRICT = { '横图': [1.60, 1.96], '方图': [0.90, 1.10], '竖图': [0.64, 0.78] };
 
 const RATIO_BY_FAMILY = {
   systemSmall: 'RATIO_SMALL',
@@ -326,6 +332,8 @@ function readConfig(env, family) {
   const ownKey = RATIO_BY_FAMILY[family];
   const ratioLabel = s(ownKey, '') || DEFAULT_RATIO[family] || '智能·标准';
   const ratioMode = ratioLabel === '不限' ? 'any' : 'band';
+  const strict = /严格/.test(s('RATIO_STRICT', '宽松'));
+  const band = (BAND_LOOSE[ratioLabel] ? (strict ? BAND_STRICT : BAND_LOOSE)[ratioLabel] : null);
 
   const sortLabel = s('SORT', '随机');
   const sort = /热度|score/i.test(sortLabel) ? 'score' : (/最新|date/i.test(sortLabel) ? 'date' : 'random');
@@ -372,6 +380,9 @@ function readConfig(env, family) {
     excludeTags,
     ratioLabel,
     ratioMode,
+    bandLo: band ? band[0] : 0,
+    bandHi: band ? band[1] : 99,
+    strict,
     ratingLabel: allowed.map(x => x === 's' ? '全年龄' : x === 'q' ? '擦边' : '工口').join('+'),
     ratingTag: ratingTagFor(allowed),
     // 服务端标签只是第一道闸；本地再校验一次，
@@ -407,7 +418,7 @@ function uiSignature(cfg) {
 }
 
 function signature(cfg) {
-  return [cfg.tagsJoined, cfg.sort, cfg.dateFilter, cfg.site, cfg.ratioLabel, cfg.ratingAllowed.join(''), cfg.minW, cfg.minScore, cfg.excludeTags.join(',')].join('|');
+  return [cfg.tagsJoined, cfg.sort, cfg.dateFilter, cfg.site, cfg.ratioLabel, cfg.strict ? 'S' : 'L', cfg.ratingAllowed.join(''), cfg.minW, cfg.minScore, cfg.excludeTags.join(',')].join('|');
 }
 
 function nextIso(minutes) {
@@ -584,8 +595,8 @@ function passesFilter(it, cfg) {
   if (it.rating && cfg.ratingAllowed.indexOf(it.rating) < 0) return false;   // 分级兜底
   if (cfg.excludeTags.length && hitsExclude(it.tags, cfg.excludeTags)) return false;
   if (cfg.ratioMode === 'band') {
-    const band = bandOf(it);
-    if (band && band !== cfg.ratioLabel) return false;
+    const ar2 = it.sampleW && it.sampleH ? it.sampleW / it.sampleH : 0;
+    if (ar2 && (ar2 < cfg.bandLo || ar2 >= cfg.bandHi)) return false;
   }
   const shortSide = Math.min(it.sampleW || 0, it.sampleH || 0);
   if (shortSide && shortSide < cfg.minW * 0.6) return false;   // 太小的直接跳过
