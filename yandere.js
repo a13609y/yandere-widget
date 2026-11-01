@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v3.3';
+const SCRIPT_VER = 'v4.0';
 
 // konachan 有两个域名：.net 是纯净镜像（只有 s），.com 才含 q/e。
 // 勾了擦边/工口就自动换 .com，只勾全年龄就用 .net。
@@ -90,11 +90,11 @@ function normalizeTag(tag) {
   return key.replace(/\s+/g, '_');
 }
 
-// 画幅判定的两套区间
-//   宽松：老逻辑，≥1.35 横、0.75~1.35 方、<0.75 竖
-//   严格：按「理想比例 ±10%」——横 1.78±10%、方 1.00±10%、竖 0.71±10%
+// 画幅判定
+//   默认（粗分档）：≥1.35 横、0.75~1.35 方、<0.75 竖
+//   打开「自定义容忍」后：按理想比例 ±N%（横 1.78 / 方 1.00 / 竖 0.71），N 默认 15
 const BAND_LOOSE = { '横图': [1.35, 99], '方图': [0.75, 1.35], '竖图': [0, 0.75] };
-const BAND_STRICT = { '横图': [1.60, 1.96], '方图': [0.90, 1.10], '竖图': [0.64, 0.78] };
+const IDEAL_AR = { '横图': 1.78, '方图': 1.00, '竖图': 0.71 };
 
 const RATIO_BY_FAMILY = {
   systemSmall: 'RATIO_SMALL',
@@ -332,8 +332,14 @@ function readConfig(env, family) {
   const ownKey = RATIO_BY_FAMILY[family];
   const ratioLabel = s(ownKey, '') || DEFAULT_RATIO[family] || '智能·标准';
   const ratioMode = ratioLabel === '不限' ? 'any' : 'band';
-  const strict = /严格/.test(s('RATIO_STRICT', '宽松'));
-  const band = (BAND_LOOSE[ratioLabel] ? (strict ? BAND_STRICT : BAND_LOOSE)[ratioLabel] : null);
+  const customOn = bool('RATIO_CUSTOM', false);
+  const tolPct = Math.min(50, Math.max(5, int('RATIO_TOL', 15, 5, 50)));   // 留空默认 15%，限制 5~50
+  const band = (() => {
+    if (!BAND_LOOSE[ratioLabel]) return null;                              // 「不限」不筛
+    if (!customOn) return BAND_LOOSE[ratioLabel];
+    const ideal = IDEAL_AR[ratioLabel];
+    return [ideal * (1 - tolPct / 100), ideal * (1 + tolPct / 100)];
+  })();
 
   const sortLabel = s('SORT', '随机');
   const sort = /热度|score/i.test(sortLabel) ? 'score' : (/最新|date/i.test(sortLabel) ? 'date' : 'random');
@@ -382,7 +388,8 @@ function readConfig(env, family) {
     ratioMode,
     bandLo: band ? band[0] : 0,
     bandHi: band ? band[1] : 99,
-    strict,
+    customOn,
+    tolPct,
     ratingLabel: allowed.map(x => x === 's' ? '全年龄' : x === 'q' ? '擦边' : '工口').join('+'),
     ratingTag: ratingTagFor(allowed),
     // 服务端标签只是第一道闸；本地再校验一次，
@@ -418,7 +425,7 @@ function uiSignature(cfg) {
 }
 
 function signature(cfg) {
-  return [cfg.tagsJoined, cfg.sort, cfg.dateFilter, cfg.site, cfg.ratioLabel, cfg.strict ? 'S' : 'L', cfg.ratingAllowed.join(''), cfg.minW, cfg.minScore, cfg.excludeTags.join(',')].join('|');
+  return [cfg.tagsJoined, cfg.sort, cfg.dateFilter, cfg.site, cfg.ratioLabel, cfg.customOn ? 'C' + cfg.tolPct : 'L', cfg.ratingAllowed.join(''), cfg.minW, cfg.minScore, cfg.excludeTags.join(',')].join('|');
 }
 
 function nextIso(minutes) {
