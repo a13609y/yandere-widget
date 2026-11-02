@@ -114,6 +114,10 @@ env_schema:
     name: 过滤 · 白底/纯色底
     description: "white_background / transparent_background（已排除 simple_background，因为它太常见）"
     options: ["true", "false"]
+  EX_WHITE:
+    name: 过滤 · 白色（white）
+    description: "只匹配整词 white（Konachan 上有这个标签，yande.re 没有）。不会误伤 white_hair 之类"
+    options: ["true", "false"]
   EXCLUDE_EXTRA:
     name: 过滤 · 自定义标签
     description: "多个用逗号分隔（guro, vore）；标签内部的空格会自动转下划线（erect nipples → erect_nipples）"
