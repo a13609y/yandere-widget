@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v4.5';
+const SCRIPT_VER = 'v4.6';
 
 // konachan 有两个域名：.net 是纯净镜像（只有 s），.com 才含 q/e。
 // 勾了擦边/工口就自动换 .com，只勾全年龄就用 .net。
@@ -95,6 +95,8 @@ function normalizeTag(tag) {
 //   打开「自定义容忍」后：按理想比例 ±N%（横 1.78 / 方 1.00 / 竖 0.71），N 默认 15
 const BAND_LOOSE = { '横图': [1.35, 99], '方图': [0.75, 1.35], '竖图': [0, 0.75] };
 const IDEAL_AR = { '横图': 1.78, '方图': 1.00, '竖图': 0.71 };
+// 时段兜底用的阶梯（天）：评分实在降不下来时，先小幅放宽时段，而不是直接跳到「不限」
+const PERIOD_LADDER = [1, 3, 7, 14, 30, 90, 180, 365, 730, 1095];
 
 const RATIO_BY_FAMILY = {
   systemSmall: 'RATIO_SMALL',
@@ -274,7 +276,9 @@ export default async function (ctx) {
     queryTags: cfg.tagsJoined,
     tagFallback,
     periodRelaxed,
-    scoreRelaxed,
+    // 以「这张图自己的分数」判断是否降档了，比记「搜索时放宽过」准
+    scoreRelaxed: cfg.minScore > 0 && (candidate.score || 0) < cfg.minScore,
+    scoreCfg: cfg.minScore,
     ratioRelaxed,
     searches,
     uiSig: uiSignature(cfg),
@@ -391,6 +395,7 @@ function readConfig(env, family) {
     sortLabel: sort === 'score' ? '热度' : (sort === 'date' ? '最新' : '随机'),
     site,
     periodLabel,
+    periodDays,
     dateFilter,
     excludeSeg: exclude.seg,
     excludeExact: exclude.exact,
@@ -464,78 +469,112 @@ function buildTagString(cfg, useTags) {
   const parts = ['order:' + (cfg.sort || 'random')];   // 必须第一个，否则排序失效
   if (useTags && cfg.tags.length) parts.push(...cfg.tags);
   if (cfg.ratingTag) parts.push(cfg.ratingTag);
+  // 评分也交给服务端：本地「先随机抽 100 张再筛掉低分」等于白抽一大半，
+  // 服务端 score:>N-1 能让随机抽样直接发生在高分池里（yande / Konachan 实测都支持）
+  if (cfg.minScore > 0) parts.push('score:>' + (cfg.minScore - 1));
   if (cfg.dateFilter) parts.push(cfg.dateFilter);
   return parts.join(' ');
+}
+
+// 评分阶梯：卡太死时逐级降（200 → 150 → 100 → 50），而不是一步砍到 0
+function scoreLadder(minScore) {
+  if (!(minScore > 0)) return [];
+  const out = [];
+  [minScore, 200, 150, 100, 50].forEach(v => {
+    if (v > minScore) return;
+    if (!out.length || v < out[out.length - 1]) out.push(v);
+  });
+  return out;
 }
 
 async function search(ctx, cfg, page) {
   const hosts = hostsFor(cfg);
   const pg = Math.max(1, page | 0);
-  let triedEmpty = false;
 
-  for (let i = 0; i < hosts.length; i++) {
-    const host = hosts[i];
-    const url = HOSTS[host] + '?tags=' + encodeURIComponent(buildTagString(cfg, true)) + '&limit=100&page=' + pg;
-    let body;
-    try {
-      body = await fetchJson(ctx, url, cfg);
-    } catch (e) {
-      // 第一个源挂了就直接试下一个
-      if (i < hosts.length - 1) continue;
-      throw e;
+  // 一次尝试：按 host 顺序取，任一 host 有结果就返回；顺带记下哪个 host 是通的
+  const run = async (c, useTags, hostList) => {
+    let lastErr = null;
+    const okHosts = [];
+    for (let i = 0; i < hostList.length; i++) {
+      const host = hostList[i];
+      const url = HOSTS[host] + '?tags=' + encodeURIComponent(buildTagString(c, useTags)) + '&limit=100&page=' + pg;
+      try {
+        const items = normalize(await fetchJson(ctx, url, c), host).filter(it => passesFilter(it, c));
+        okHosts.push(host);
+        if (items.length) return { items, host, okHosts, lastErr };
+      } catch (e) {
+        lastErr = e;                 // 某个源挂了 → 试下一个源
+      }
     }
-    const items = normalize(body, host);
-    const passed = items.filter(it => passesFilter(it, cfg));
-    if (passed.length) return { items: passed, empty: false, tagFallback: false };
-    triedEmpty = true;
+    return { items: [], host: okHosts[0] || null, okHosts, lastErr };
+  };
+
+  const ok = (r, extra) => Object.assign({
+    items: r.items, empty: false,
+    tagFallback: false, periodRelaxed: false, ratioRelaxed: false, scoreRelaxed: false
+  }, extra || {});
+
+  // ⓪ 原样
+  let r = await run(cfg, true, hosts);
+  if (r.items.length) return ok(r);
+
+  let lastErr = r.lastErr;
+  const primary = r.okHosts.length ? r.okHosts : hosts.slice(0, 1);   // 后面的放宽只在能连通的源上试
+  const useTags = cfg.tags.length > 0;
+
+  // ① 标签组合太窄 → 去掉用户标签
+  if (cfg.tags.length) {
+    r = await run(cfg, false, hosts);
+    if (r.items.length) return ok(r, { tagFallback: true });
+    lastErr = r.lastErr || lastErr;
   }
 
-  // 回退①：标签组合全空 → 去掉用户标签，只留排序 + 分级 + 时段
-  if (triedEmpty && cfg.tags.length) {
-    const url = HOSTS[hosts[0]] + '?tags=' + encodeURIComponent(buildTagString(cfg, false)) + '&limit=100&page=' + pg;
-    const body = await fetchJson(ctx, url, cfg);
-    const passed = normalize(body, hosts[0]).filter(it => passesFilter(it, cfg));
-    if (passed.length) return { items: passed, empty: false, tagFallback: true, periodRelaxed: false };
+  // ② 自定义容忍太窄（方图 ±15%，而 Konachan 的「方图」其实是 4:3）→ 退回粗分档
+  if (cfg.customOn) {
+    const loose = Object.assign({}, cfg, {
+      customOn: false,
+      bandLo: BAND_LOOSE[cfg.ratioLabel] ? BAND_LOOSE[cfg.ratioLabel][0] : 0,
+      bandHi: BAND_LOOSE[cfg.ratioLabel] ? BAND_LOOSE[cfg.ratioLabel][1] : 99
+    });
+    r = await run(loose, true, hosts);
+    if (r.items.length) return ok(r, { ratioRelaxed: true });
+    lastErr = r.lastErr || lastErr;
+  }
 
-    // 回退②：连时段也无图（比如「热度 + 一天内」）→ 再去掉时段，只留排序 + 分级
-    if (cfg.dateFilter) {
-      const cfg2 = Object.assign({}, cfg, { dateFilter: '' });
-      const url2 = HOSTS[hosts[0]] + '?tags=' + encodeURIComponent(buildTagString(cfg2, false)) + '&limit=100&page=' + pg;
-      const body2 = await fetchJson(ctx, url2, cfg);
-      const passed2 = normalize(body2, hosts[0]).filter(it => passesFilter(it, cfg));
-      return { items: passed2, empty: passed2.length === 0, tagFallback: true, periodRelaxed: true };
+  // ③ 最低评分卡太死 → 逐级降档（保住时段）
+  const ladder = scoreLadder(cfg.minScore);
+  for (let i = 1; i < ladder.length; i++) {
+    const c = Object.assign({}, cfg, { minScore: ladder[i] });
+    r = await run(c, useTags, primary);
+    if (r.items.length) return ok(r, { tagFallback: useTags, scoreRelaxed: true });
+    lastErr = r.lastErr || lastErr;
+  }
+
+  // ④ 时段太窄（例如「一年内 + 200 分」，实测一年内的图最高只有 190）→ 保住评分，逐级放宽时段
+  if (cfg.dateFilter) {
+    const steps = PERIOD_LADDER.filter(d => d > (cfg.periodDays || 0)).slice(0, 3);
+    for (let i = 0; i < steps.length; i++) {
+      const c = Object.assign({}, cfg, { dateFilter: 'date:>' + ymdDaysAgo(steps[i]), periodDays: steps[i] });
+      r = await run(c, useTags, primary);
+      if (r.items.length) return ok(r, { tagFallback: useTags, periodRelaxed: true });
+      lastErr = r.lastErr || lastErr;
     }
-    return { items: [], empty: true, tagFallback: true, periodRelaxed: false };
+    const c = Object.assign({}, cfg, { dateFilter: '', periodDays: 0 });
+    r = await run(c, useTags, primary);
+    if (r.items.length) return ok(r, { tagFallback: useTags, periodRelaxed: true });
+    lastErr = r.lastErr || lastErr;
   }
 
-  // 最低评分卡太死 → 去掉它再试一次
-  if (triedEmpty && cfg.minScore > 0) {
-    const cfg3 = Object.assign({}, cfg, { minScore: 0 });
-    const url3 = HOSTS[hosts[0]] + '?tags=' + encodeURIComponent(buildTagString(cfg3, cfg.tags.length > 0)) + '&limit=100&page=' + pg;
-    const body3 = await fetchJson(ctx, url3, cfg);
-    const passed3 = normalize(body3, hosts[0]).filter(it => passesFilter(it, cfg3));
-    if (passed3.length) return { items: passed3, empty: false, tagFallback: false, periodRelaxed: false, scoreRelaxed: true };
+  // ⑤ 最后兜底：评分也不要了
+  if (cfg.minScore > 0) {
+    const c = Object.assign({}, cfg, { minScore: 0, dateFilter: '' });
+    r = await run(c, useTags, primary);
+    if (r.items.length) return ok(r, { tagFallback: useTags, periodRelaxed: cfg.dateFilter ? true : false, scoreRelaxed: true });
+    lastErr = r.lastErr || lastErr;
   }
 
-  // 自定义容忍太窄（例如方图 ±15%，而 Konachan 的"方图"其实是 4:3）→ 退回粗分档再试一次
-  if (triedEmpty && cfg.customOn) {
-    const cfg5 = Object.assign({}, cfg, { customOn: false, bandLo: BAND_LOOSE[cfg.ratioLabel] ? BAND_LOOSE[cfg.ratioLabel][0] : 0, bandHi: BAND_LOOSE[cfg.ratioLabel] ? BAND_LOOSE[cfg.ratioLabel][1] : 99 });
-    const url5 = HOSTS[hosts[0]] + '?tags=' + encodeURIComponent(buildTagString(cfg5, cfg.tags.length > 0)) + '&limit=100&page=' + pg;
-    const body5 = await fetchJson(ctx, url5, cfg);
-    const passed5 = normalize(body5, hosts[0]).filter(it => passesFilter(it, cfg5));
-    if (passed5.length) return { items: passed5, empty: false, tagFallback: false, periodRelaxed: false, scoreRelaxed: false, ratioRelaxed: true };
-  }
-
-  // 没有标签但有时段且空 → 去掉时段再试一次
-  if (triedEmpty && cfg.dateFilter) {
-    const cfg2 = Object.assign({}, cfg, { dateFilter: '' });
-    const url2 = HOSTS[hosts[0]] + '?tags=' + encodeURIComponent(buildTagString(cfg2, false)) + '&limit=100&page=' + pg;
-    const body2 = await fetchJson(ctx, url2, cfg);
-    const passed2 = normalize(body2, hosts[0]).filter(it => passesFilter(it, cfg));
-    return { items: passed2, empty: passed2.length === 0, tagFallback: false, periodRelaxed: true };
-  }
-
-  return { items: [], empty: true, tagFallback: false, periodRelaxed: false };
+  if (lastErr) throw lastErr;
+  return { items: [], empty: true, tagFallback: false, periodRelaxed: false, ratioRelaxed: false, scoreRelaxed: false };
 }
 
 async function fetchJson(ctx, url, cfg) {
@@ -711,9 +750,15 @@ function buildWidget(entry, family, cfg, refreshAfter) {
   const lines = [];
 
   if (cfg.showInfo && entry.dim) {
+    // 放宽角标：以前只在 DEBUG 里露出来，用户看到 ♥38 配「最低评分 200」会以为筛选坏了
+    const badges = [];
+    if (entry.tagFallback) badges.push('⚠标签');
+    if (entry.periodRelaxed) badges.push('⚠时段');
+    if (entry.scoreRelaxed) badges.push('⚠评分<' + (entry.scoreCfg || cfg.minScore));
+    if (entry.ratioRelaxed) badges.push('⚠画幅');
     lines.push({
       type: 'text',
-      text: entry.dim + (entry.score ? ' · ♥' + entry.score : ''),
+      text: entry.dim + (entry.score ? ' · ♥' + entry.score : '') + (badges.length ? ' ' + badges.join(' ') : ''),
       font: { size: 'caption1', weight: 'semibold' },
       textColor: '#FFFFFF',
       shadowColor: 'rgba(0,0,0,0.55)',
@@ -730,7 +775,7 @@ function buildWidget(entry, family, cfg, refreshAfter) {
       text: `${SCRIPT_VER} ${entry.site} ${entry.ar || '-'} ${cfg.ratioLabel} ${entry.rating || '-'}`
         + `${entry.sizeKb ? ' ' + entry.sizeKb + 'KB' : ''}`
         + ` ${cfg.sortLabel}${cfg.dateFilter ? '/' + cfg.periodLabel : ''}`
-        + `${entry.tagFallback ? ' ⚠标签' : ''}${entry.periodRelaxed ? ' ⚠时段' : ''}${entry.scoreRelaxed ? ' ⚠评分' : ''}${entry.ratioRelaxed ? ' ⚠画幅' : ''}`
+        + `${entry.tagFallback ? ' ⚠标签' : ''}${entry.periodRelaxed ? ' ⚠时段' : ''}${entry.scoreRelaxed ? ' ⚠评分' + entry.score + '<' + entry.scoreCfg : ''}${entry.ratioRelaxed ? ' ⚠画幅' : ''}`
         + `${entry.queryTags ? ' 「' + entry.queryTags + '」' : ''} ${entry.searches}搜`,
       font: { size: 'caption2' },
       textColor: 'rgba(255,255,255,0.55)',
