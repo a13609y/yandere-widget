@@ -750,15 +750,10 @@ function buildWidget(entry, family, cfg, refreshAfter) {
   const lines = [];
 
   if (cfg.showInfo && entry.dim) {
-    // 放宽角标：以前只在 DEBUG 里露出来，用户看到 ♥38 配「最低评分 200」会以为筛选坏了
-    const badges = [];
-    if (entry.tagFallback) badges.push('⚠标签');
-    if (entry.periodRelaxed) badges.push('⚠时段');
-    if (entry.scoreRelaxed) badges.push('⚠评分<' + (entry.scoreCfg || cfg.minScore));
-    if (entry.ratioRelaxed) badges.push('⚠画幅');
+    // 放宽角标只放在调试行（开着 DEBUG 才显示），封面保持干净
     lines.push({
       type: 'text',
-      text: entry.dim + (entry.score ? ' · ♥' + entry.score : '') + (badges.length ? ' ' + badges.join(' ') : ''),
+      text: entry.dim + (entry.score ? ' · ♥' + entry.score : ''),
       font: { size: 'caption1', weight: 'semibold' },
       textColor: '#FFFFFF',
       shadowColor: 'rgba(0,0,0,0.55)',
