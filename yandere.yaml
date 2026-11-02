@@ -15,7 +15,7 @@ env_schema:
 
   SITE:
     name: 内容 · 图源
-    description: "自动 = 先查 yande.re，没结果再试 Konachan。Konachan 会按分级自动换域名：只勾「全年龄」走 konachan.net（纯净镜像），勾了「擦边/工口」自动走 konachan.com（实测 .net 完全不返回 q/e）"
+    description: "自动 = 先查 Konachan（一次给 100 条、素材多），没结果再试 yande.re。Konachan 会按分级自动换域名：只勾「全年龄」走 konachan.net（纯净镜像），勾了「擦边/工口」自动走 konachan.com（实测 .net 完全不返回 q/e）"
     options: ["自动", "yande.re", "Konachan"]
 
   SORT:
