@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v4.3';
+const SCRIPT_VER = 'v4.4';
 
 // konachan 有两个域名：.net 是纯净镜像（只有 s），.com 才含 q/e。
 // 勾了擦边/工口就自动换 .com，只勾全年龄就用 .net。
@@ -204,6 +204,7 @@ export default async function (ctx) {
   let tagFallback = false;
   let periodRelaxed = false;
   let scoreRelaxed = false;
+  let ratioRelaxed = false;
 
   // 素材不够时继续翻页，最多 4 次：
   //   随机 → 每次换一个随机页（每页都是新的一批）
@@ -222,7 +223,7 @@ export default async function (ctx) {
       pool.sig = sig;
       writeJSON(ctx, poolKey, pool);
       candidate = pickFromPool(pool, historySet, cfg);
-      if (candidate) { tagFallback = res.tagFallback; periodRelaxed = res.periodRelaxed; scoreRelaxed = res.scoreRelaxed; break; }
+      if (candidate) { tagFallback = res.tagFallback; periodRelaxed = res.periodRelaxed; scoreRelaxed = res.scoreRelaxed; ratioRelaxed = res.ratioRelaxed; break; }
       if (res.empty || added.length === 0) break;
     } catch (e) {
       lastError = (e && e.message) || '搜索失败';
@@ -274,6 +275,7 @@ export default async function (ctx) {
     tagFallback,
     periodRelaxed,
     scoreRelaxed,
+    ratioRelaxed,
     searches,
     uiSig: uiSignature(cfg),
     sig,
@@ -515,6 +517,15 @@ async function search(ctx, cfg, page) {
     if (passed3.length) return { items: passed3, empty: false, tagFallback: false, periodRelaxed: false, scoreRelaxed: true };
   }
 
+  // 自定义容忍太窄（例如方图 ±15%，而 Konachan 的"方图"其实是 4:3）→ 退回粗分档再试一次
+  if (triedEmpty && cfg.customOn) {
+    const cfg5 = Object.assign({}, cfg, { customOn: false, bandLo: BAND_LOOSE[cfg.ratioLabel] ? BAND_LOOSE[cfg.ratioLabel][0] : 0, bandHi: BAND_LOOSE[cfg.ratioLabel] ? BAND_LOOSE[cfg.ratioLabel][1] : 99 });
+    const url5 = HOSTS[hosts[0]] + '?tags=' + encodeURIComponent(buildTagString(cfg5, cfg.tags.length > 0)) + '&limit=100&page=' + pg;
+    const body5 = await fetchJson(ctx, url5, cfg);
+    const passed5 = normalize(body5, hosts[0]).filter(it => passesFilter(it, cfg5));
+    if (passed5.length) return { items: passed5, empty: false, tagFallback: false, periodRelaxed: false, scoreRelaxed: false, ratioRelaxed: true };
+  }
+
   // 没有标签但有时段且空 → 去掉时段再试一次
   if (triedEmpty && cfg.dateFilter) {
     const cfg2 = Object.assign({}, cfg, { dateFilter: '' });
@@ -719,7 +730,7 @@ function buildWidget(entry, family, cfg, refreshAfter) {
       text: `${SCRIPT_VER} ${entry.site} ${entry.ar || '-'} ${cfg.ratioLabel} ${entry.rating || '-'}`
         + `${entry.sizeKb ? ' ' + entry.sizeKb + 'KB' : ''}`
         + ` ${cfg.sortLabel}${cfg.dateFilter ? '/' + cfg.periodLabel : ''}`
-        + `${entry.tagFallback ? ' ⚠标签' : ''}${entry.periodRelaxed ? ' ⚠时段' : ''}${entry.scoreRelaxed ? ' ⚠评分' : ''}`
+        + `${entry.tagFallback ? ' ⚠标签' : ''}${entry.periodRelaxed ? ' ⚠时段' : ''}${entry.scoreRelaxed ? ' ⚠评分' : ''}${entry.ratioRelaxed ? ' ⚠画幅' : ''}`
         + `${entry.queryTags ? ' 「' + entry.queryTags + '」' : ''} ${entry.searches}搜`,
       font: { size: 'caption2' },
       textColor: 'rgba(255,255,255,0.55)',
