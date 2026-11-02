@@ -31,9 +31,8 @@ yande.re 的 `sample` 图正好：**长边 1500px，体积 200~500KB**，不压�
 | 画幅·自定义容忍 / 容忍百分比 | 开关 + 百分比（默认 15） | 关 / 15 |
 | 分级开关 | 全年龄(s) / 擦边(q) / 工口(e) 三个独立开关，自由组合 | s ✓ q ✓ e ✗ |
 | 最小短边 | 短边低于此值跳过 | 1024 |
-| 排除·露点 / 胖次 / 内衣 / 透视 / 裸体 / 骆驼趾 | 命中对应标签就跳过（本地过滤） | 全开 |
-| 排除·多格/拼图 / 草图页 / 白底 | comic/4koma/collage、sketch_page 等、white_background/transparent_background | 前两项开、白底关 |
-| 排除·白色（white） | 只匹配整词 `white`（Konachan 有，yande.re 没有），不误伤 `white_hair` | 关 |
+| 排除·露点 / 胖次 / 内衣 / 透视 / 裸体 / 骆驼趾 | 命中对应标签就跳过（本地按 `_` 分段匹配） | 前六项全开 |
+| 排除·白色（white） | 只匹配整词 `white`，不误伤 `white_hair` ｜ 站点：仅 Konachan | 关 |
 | 排除·萝莉正太 / 捆绑 | 同上 | 关 |
 | 排除·自定义标签 | 多个用逗号分隔（`guro, vore`）；标签内空格自动转下划线 | 空 |
 | 换图间隔 | 分钟 | 30 |
@@ -107,3 +106,24 @@ yande.re 的 `rating:s` **不保证内容真的全年龄**：实测 100 条 `rat
 - 「仅擦边 + 窄画幅」组合素材偏少：实测 `rating:q` 每次请求约 20 条，其中横图约 15%（每次约 3 张可用），偶尔会出现一轮拿不到图 → 显示错误卡片，15 分钟后自动重试（有缓存时会继续显示旧图）。
 - yande.re 的接口没有画幅参数，画幅是在本地按宽高比筛的，所以一页 30 条里可能只有一部分符合。
 - `order:random` 必须放在标签串最前面，脚本已经处理；这也是「不填标签就是随机」的实现方式。
+
+
+## 排除开关与站点支持（2026-11 实测）
+
+| 开关 | 标签 | yande.re | Konachan |
+|---|---|---|---|
+| 露点 | `nipples` | ✅ | ✅ |
+| 露点 | `nipple`（单数） | ✅ | ❌ |
+| 胖次 | `panties` | ✅ | ✅ |
+| 内衣 | `underwear` `bra` | ✅ | ✅ |
+| 透视 | `see_through` | ✅ | ✅ |
+| 裸体 | `nude` `topless` | ✅ | ✅ |
+| 裸体 | `completely_nude` | ✅ | ❌ |
+| 骆驼趾 | `cameltoe` | ✅ | ✅ |
+| 骆驼趾 | `spread_legs` | ❌ | ✅ |
+| 萝莉正太 | `loli` | ✅ | ✅ |
+| 萝莉正太 | `shota` | ✅ | 仅 1 条 |
+| 捆绑 | `bondage` | ✅ | ✅ |
+| 白色 | `white` | ❌ | ✅ |
+
+已删除的空转开关：**草图页/设定集**（`sketch_page` `reference_sheet` `character_sheet` 两站都是 0）、**白底**（`white_background` Konachan 仅 1 条、`transparent_background` 为 0）、**多格/拼图**（`comic` `2koma` `multiple_views` `collage` 全 0，只剩 `4koma` 且仅 yande.re）。
