@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v4.2';
+const SCRIPT_VER = 'v4.3';
 
 // konachan 有两个域名：.net 是纯净镜像（只有 s），.com 才含 q/e。
 // 勾了擦边/工口就自动换 .com，只勾全年龄就用 .net。
@@ -146,10 +146,11 @@ const EXCLUDE_PRESETS = [
   { key: 'EX_CAMEL', tags: ['cameltoe', 'spread_legs'] },
   { key: 'EX_BONDAGE', tags: ['bondage'] },
   // 「白色」只按整词匹配：konachan 上 white_hair 有上万条，按段匹配会把白毛角色全灭
-  { key: 'EX_WHITE', tags: ['white'], exact: true }
-  // 已删除（实测两边都没有这些标签，纯空转）：
-  //   EX_PANEL  comic / 2koma / multiple_views / collage 全 0，只剩 4koma 且仅 yande.re
-  //   EX_SKETCH sketch_page / reference_sheet / character_sheet 三个全 0
+  { key: 'EX_WHITE', tags: ['white'], exact: true },
+  // 多格：只有 4koma 在 yande.re 有效（其余 comic/2koma/multiple_views/collage 两站都是 0）
+  { key: 'EX_PANEL', tags: ['4koma'] }
+  // 已删除（两站都搜不到，纯空转）：
+  //   EX_SKETCH sketch_page / reference_sheet / character_sheet
   //   EX_PLAINBG white_background（Konachan 仅 1 条）/ transparent_background（0）
 ];
 
