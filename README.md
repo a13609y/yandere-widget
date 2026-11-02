@@ -33,6 +33,7 @@ yande.re 的 `sample` 图正好：**长边 1500px，体积 200~500KB**，不压�
 | 最小短边 | 短边低于此值跳过 | 1024 |
 | 排除·露点 / 胖次 / 内衣 / 透视 / 裸体 / 骆驼趾 | 命中对应标签就跳过（本地过滤） | 全开 |
 | 排除·多格/拼图 / 草图页 / 白底 | comic/4koma/collage、sketch_page 等、white_background/transparent_background | 前两项开、白底关 |
+| 排除·白色（white） | 只匹配整词 `white`（Konachan 有，yande.re 没有），不误伤 `white_hair` | 关 |
 | 排除·萝莉正太 / 捆绑 | 同上 | 关 |
 | 排除·自定义标签 | 多个用逗号分隔（`guro, vore`）；标签内空格自动转下划线 | 空 |
 | 换图间隔 | 分钟 | 30 |
