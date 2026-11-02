@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v4.1';
+const SCRIPT_VER = 'v4.2';
 
 // konachan 有两个域名：.net 是纯净镜像（只有 s），.com 才含 q/e。
 // 勾了擦边/工口就自动换 .com，只勾全年龄就用 .net。
@@ -145,12 +145,12 @@ const EXCLUDE_PRESETS = [
   { key: 'EX_LOLI', tags: ['loli', 'shota'] },
   { key: 'EX_CAMEL', tags: ['cameltoe', 'spread_legs'] },
   { key: 'EX_BONDAGE', tags: ['bondage'] },
-  // 构图类：在小组件里必然难看的存在
-  { key: 'EX_PANEL', tags: ['comic', '4koma', '2koma', 'multiple_views', 'collage'] },
-  { key: 'EX_SKETCH', tags: ['sketch_page', 'reference_sheet', 'character_sheet'] },
-  { key: 'EX_PLAINBG', tags: ['white_background', 'transparent_background'] },
   // 「白色」只按整词匹配：konachan 上 white_hair 有上万条，按段匹配会把白毛角色全灭
   { key: 'EX_WHITE', tags: ['white'], exact: true }
+  // 已删除（实测两边都没有这些标签，纯空转）：
+  //   EX_PANEL  comic / 2koma / multiple_views / collage 全 0，只剩 4koma 且仅 yande.re
+  //   EX_SKETCH sketch_page / reference_sheet / character_sheet 三个全 0
+  //   EX_PLAINBG white_background（Konachan 仅 1 条）/ transparent_background（0）
 ];
 
 const MAX_POOL = 80;
