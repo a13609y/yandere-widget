@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v4.4';
+const SCRIPT_VER = 'v4.5';
 
 // konachan 有两个域名：.net 是纯净镜像（只有 s），.com 才含 q/e。
 // 勾了擦边/工口就自动换 .com，只勾全年龄就用 .net。
@@ -454,7 +454,7 @@ function hostsFor(cfg) {
   const kHost = wantsAdult ? 'konachanR18' : 'konachan';
   if (cfg.site === 'yande') return ['yande'];
   if (cfg.site === 'konachan') return [kHost];
-  return ['yande', kHost];
+  return [kHost, 'yande'];          // 自动：Konachan 先（量大、一次给 100 条），空了再 yande.re
 }
 
 // 注意：标签之间必须用「空格」分隔再整体 encodeURIComponent。
