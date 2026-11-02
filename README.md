@@ -32,6 +32,7 @@ yande.re 的 `sample` 图正好：**长边 1500px，体积 200~500KB**，不压�
 | 分级开关 | 全年龄(s) / 擦边(q) / 工口(e) 三个独立开关，自由组合 | s ✓ q ✓ e ✗ |
 | 最小短边 | 短边低于此值跳过 | 1024 |
 | 排除·露点 / 胖次 / 内衣 / 透视 / 裸体 / 骆驼趾 | 命中对应标签就跳过（本地按 `_` 分段匹配） | 前六项全开 |
+| 排除·多格（4koma） | 只排 4 格漫画 ｜ 站点：仅 yande.re | 开 |
 | 排除·白色（white） | 只匹配整词 `white`，不误伤 `white_hair` ｜ 站点：仅 Konachan | 关 |
 | 排除·萝莉正太 / 捆绑 | 同上 | 关 |
 | 排除·自定义标签 | 多个用逗号分隔（`guro, vore`）；标签内空格自动转下划线 | 空 |
@@ -126,4 +127,8 @@ yande.re 的 `rating:s` **不保证内容真的全年龄**：实测 100 条 `rat
 | 捆绑 | `bondage` | ✅ | ✅ |
 | 白色 | `white` | ❌ | ✅ |
 
-已删除的空转开关：**草图页/设定集**（`sketch_page` `reference_sheet` `character_sheet` 两站都是 0）、**白底**（`white_background` Konachan 仅 1 条、`transparent_background` 为 0）、**多格/拼图**（`comic` `2koma` `multiple_views` `collage` 全 0，只剩 `4koma` 且仅 yande.re）。
+已删除的空转开关（两站都搜不到）：**草图页/设定集**（`sketch_page` `reference_sheet` `character_sheet`）、**白底**（`white_background` Konachan 仅 1 条、`transparent_background` 为 0）。
+
+多格漫画那组只保留 `4koma`（仅 yande.re 有效），`comic`、`2koma`、`multiple_views`、`collage` 已移除。
+
+判定标准：**任一站能搜到就保留，两站都搜不到才删**。
