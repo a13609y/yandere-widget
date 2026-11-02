@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v4.0';
+const SCRIPT_VER = 'v4.1';
 
 // konachan 有两个域名：.net 是纯净镜像（只有 s），.com 才含 q/e。
 // 勾了擦边/工口就自动换 .com，只勾全年龄就用 .net。
@@ -148,7 +148,9 @@ const EXCLUDE_PRESETS = [
   // 构图类：在小组件里必然难看的存在
   { key: 'EX_PANEL', tags: ['comic', '4koma', '2koma', 'multiple_views', 'collage'] },
   { key: 'EX_SKETCH', tags: ['sketch_page', 'reference_sheet', 'character_sheet'] },
-  { key: 'EX_PLAINBG', tags: ['white_background', 'transparent_background'] }
+  { key: 'EX_PLAINBG', tags: ['white_background', 'transparent_background'] },
+  // 「白色」只按整词匹配：konachan 上 white_hair 有上万条，按段匹配会把白毛角色全灭
+  { key: 'EX_WHITE', tags: ['white'], exact: true }
 ];
 
 const MAX_POOL = 80;
@@ -354,15 +356,19 @@ function readConfig(env, family) {
   const dateFilter = (periodDays > 0 && sort !== 'date') ? 'date:>' + ymdDaysAgo(periodDays) : '';
 
   // 排除标签：开关命中的 + 手填的
-  const excludeTags = (() => {
-    const out = [];
-    EXCLUDE_PRESETS.forEach(p => { if (bool(p.key, false)) out.push(...p.tags); });
+  const exclude = (() => {
+    const seg = [];   // 按 `_` 分段匹配（nipples 命中 erect_nipples）
+    const exact = []; // 整词匹配（white 不误伤 white_hair）
+    EXCLUDE_PRESETS.forEach(p => {
+      if (!bool(p.key, false)) return;
+      (p.exact ? exact : seg).push(...p.tags);
+    });
     s('EXCLUDE_EXTRA', '')
       .split(/[,，、|]/)                              // 只用逗号分组：空格是标签内部的（erect nipples → erect_nipples）
       .map(x => x.trim().toLowerCase().replace(/\s+/g, '_'))
       .filter(Boolean)
-      .forEach(t => out.push(t));
-    return Array.from(new Set(out));
+      .forEach(t => seg.push(t));
+    return { seg: Array.from(new Set(seg)), exact: Array.from(new Set(exact)) };
   })();
 
   const siteLabel = s('SITE', '自动');
@@ -383,7 +389,8 @@ function readConfig(env, family) {
     site,
     periodLabel,
     dateFilter,
-    excludeTags,
+    excludeSeg: exclude.seg,
+    excludeExact: exclude.exact,
     ratioLabel,
     ratioMode,
     bandLo: band ? band[0] : 0,
@@ -425,7 +432,7 @@ function uiSignature(cfg) {
 }
 
 function signature(cfg) {
-  return [cfg.tagsJoined, cfg.sort, cfg.dateFilter, cfg.site, cfg.ratioLabel, cfg.customOn ? 'C' + cfg.tolPct : 'L', cfg.ratingAllowed.join(''), cfg.minW, cfg.minScore, cfg.excludeTags.join(',')].join('|');
+  return [cfg.tagsJoined, cfg.sort, cfg.dateFilter, cfg.site, cfg.ratioLabel, cfg.customOn ? 'C' + cfg.tolPct : 'L', cfg.ratingAllowed.join(''), cfg.minW, cfg.minScore, cfg.excludeSeg.join(',') + '|' + cfg.excludeExact.join(',')].join('|');
 }
 
 function nextIso(minutes) {
@@ -581,11 +588,14 @@ function bandOf(it) {
 //   nipples        → nipples / erect_nipples / puffy_nipples  ✅
 //   bra            → braid 不会命中（braid 是整段）           ✅
 //   erect_nipples  → erect_nipples 命中（多段也能匹配）        ✅
-function hitsExclude(tags, excludes) {
+function hitsExclude(tags, segExcludes, exactExcludes) {
   const tokens = String(tags || '').toLowerCase().split(' ').filter(Boolean);
   if (!tokens.length) return false;
-  for (let i = 0; i < excludes.length; i++) {
-    const kw = excludes[i];
+  for (let i = 0; i < exactExcludes.length; i++) {
+    if (tokens.indexOf(exactExcludes[i]) >= 0) return true;
+  }
+  for (let i = 0; i < segExcludes.length; i++) {
+    const kw = segExcludes[i];
     if (!kw) continue;
     for (let j = 0; j < tokens.length; j++) {
       const t = tokens[j];
@@ -600,7 +610,7 @@ function hitsExclude(tags, excludes) {
 
 function passesFilter(it, cfg) {
   if (it.rating && cfg.ratingAllowed.indexOf(it.rating) < 0) return false;   // 分级兜底
-  if (cfg.excludeTags.length && hitsExclude(it.tags, cfg.excludeTags)) return false;
+  if ((cfg.excludeSeg.length || cfg.excludeExact.length) && hitsExclude(it.tags, cfg.excludeSeg, cfg.excludeExact)) return false;
   if (cfg.ratioMode === 'band') {
     const ar2 = it.sampleW && it.sampleH ? it.sampleW / it.sampleH : 0;
     if (ar2 && (ar2 < cfg.bandLo || ar2 >= cfg.bandHi)) return false;
