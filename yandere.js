@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v6.3';
+const SCRIPT_VER = 'v6.7';
 
 // konachan 有两个域名：.net 是纯净镜像（只有 s），.com 才含 q/e。
 // 勾了擦边/工口就自动换 .com，只勾全年龄就用 .net。
@@ -214,8 +214,9 @@ export default async function (ctx) {
   //   热度/最新 → 按 1..10 页顺序往后翻（排序稳定，翻页才有意义）
   while (!candidate && searches < 3) {
     try {
+      const yandeRandomWithDate = cfg.site === 'yande' && cfg.sort === 'random' && !!cfg.dateFilter;
       const page = cfg.sort === 'random'
-        ? 1 + Math.floor(Math.random() * 3)
+        ? (yandeRandomWithDate ? 1 + Math.floor(Math.random() * 20) : 1 + Math.floor(Math.random() * 3))
         : Math.max(1, pool.page || 1);
       const res = await search(ctx, cfg, page, pool.plan, badSet, historySet);
       if (cfg.sort !== 'random') pool.page = page >= 10 ? 1 : page + 1;
@@ -259,8 +260,11 @@ export default async function (ctx) {
   let img = null;
   let tries = 0;
   let transientHits = 0;
-  const referer = 'https://' + (candidate.site || 'yande.re') + '/';
-  while (!img && candidate && tries < 3) {
+  let retriedSame = false;                          // 同一张图是否已经重试过一次
+  // candidate.site 是内部 key（yande / konachan / konachanR18），必须换成真实域名：
+  // 拼错成 https://yande/ 时 yande 的图床会 307 回图片页（表现为“加载不出图”）
+  const referer = 'https://' + (SITE_DOMAIN[candidate.site] || candidate.site || 'yande.re') + '/';
+  while (!img && candidate && tries < 4) {
     tries++;
     try {
       img = await download(ctx, candidate.sample || candidate.file, cfg, referer);
@@ -268,9 +272,12 @@ export default async function (ctx) {
       lastError = (e && e.message) || '图片下载失败';
       if (e && (e.status === 429 || e.status === 403)) { errorStatus = e.status; break; }
       if (e && e.transient) {
-        // 限流是暂时的：只在本轮里跳过它，不写进坏图列表
+        // 图床的 307/HTML 多数是暂时的（yande 会间歇性把 sample 跳回图片页）
+        // 先原样重试一次，还不行再换一张；都不算坏图
+        if (!retriedSame) { retriedSame = true; continue; }
         badSet.add(String(candidate.id));
-        if (++transientHits >= 2) break;          // 连续两次就别再试了，直接回退旧图
+        retriedSame = false;
+        if (++transientHits >= 3) break;
       } else {
         badSet.add(String(candidate.id));
         markBad(ctx, candidate.id);               // 这张真下不来，7 天内不再试
@@ -499,7 +506,10 @@ function hostsFor(cfg) {
 // 如果先拼 '+' 再编码，'+' 会变成 %2B（字面加号），服务端就不当作分隔符了——
 // 整个串被当成一个不存在的标签，返回一堆随机图，分级/标签筛选全部失效。
 function buildTagString(cfg, useTags) {
-  const parts = ['order:' + (cfg.sort || 'random')];   // 必须第一个，否则排序失效
+  // yande.re 的 order:random 叠加 date: 只回 0~3 条（服务端毛病），
+  // 这时改用 order:date + 随机页：仍然是“随机挑一批”，但落在时段内且数量正常
+  const yandeRandomWithDate = cfg.site === 'yande' && cfg.sort === 'random' && !!cfg.dateFilter;
+  const parts = ['order:' + (yandeRandomWithDate ? 'date' : (cfg.sort || 'random'))];   // 必须第一个，否则排序失效
   if (useTags && cfg.tags.length) parts.push(...cfg.tags);
   if (cfg.ratingTag) parts.push(cfg.ratingTag);
   // 评分也交给服务端：本地「先随机抽 100 张再筛掉低分」等于白抽一大半，
@@ -692,7 +702,7 @@ function normalize(list, host, meta) {
       site: host,
       page: 'https://' + (SITE_DOMAIN[host] || 'yande.re') + '/post/show/' + p.id,
       file: p.file_url || '',
-      sample: sample || p.file_url || '',
+      sample: sample,          // 不用 file_url 兜底：yande 的 /image/ 原图未登录会被 307 回图片页
       sampleW,
       sampleH,
       sampleSize: sampleSize || Number(p.file_size) || 0,
@@ -763,7 +773,11 @@ function passesFilter(it, cfg) {
 /* ============================ 下载 ============================ */
 
 async function download(ctx, url, cfg, referer) {
-  const safeUrl = encodeURI(decodeURI(url));   // sample 地址里常带空格（%20 或裸空格）
+  // 只补裸空格/非 ASCII，不做 decodeURI→encodeURI：
+  // 那一步会把 %28 %29（括号）、%21（!）解成字面量，yande 的图床就认不出文件、307 跳回图片页
+  const safeUrl = String(url || '').trim()
+    .replace(/ /g, '%20')
+    .replace(/[^\x21-\x7e]+/g, m => encodeURIComponent(m));
   let resp;
   try {
     resp = await ctx.http.get(safeUrl, {
