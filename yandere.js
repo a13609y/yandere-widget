@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v6.7';
+const SCRIPT_VER = 'v8.0';
 
 // konachan 有两个域名：.net 是纯净镜像（只有 s），.com 才含 q/e。
 // 勾了擦边/工口就自动换 .com，只勾全年龄就用 .net。
@@ -53,7 +53,9 @@ const K = {
   history: 'yd_history',
   lastShow: 'yd_lastshow_',  // + family
   debug: 'yd_debug',
-  bad: 'yd_bad'              // 下不下来的图（id → 时间戳），7 天内不再试
+  bad: 'yd_bad',             // 下不下来的图（id → 时间戳），7 天内不再试
+  bag: 'yd_bag',             // 洗牌袋：一页清单洗好后逐张发
+  shown: 'yd_shown'          // 最近展示过的图的元数据（回放用）
 };
 
 // yande.re / Konachan 的标签全是英文（罗马字），中文直接查是 0 条。
@@ -140,21 +142,12 @@ const RATING_ALLOWED = {
 // 排除用的敏感标签。yande.re 的 -tag 反选实测无效（只对 rating: 这类元标签生效），
 // 所以只能抓回来后在本地按标签精确匹配剔除
 const EXCLUDE_PRESETS = [
-  { key: 'EX_NIPPLE', tags: ['nipple', 'nipples'] },   // 单复数都排
-  { key: 'EX_PANTY', tags: ['panties'] },
-  { key: 'EX_UNDERWEAR', tags: ['underwear', 'bra'] },
-  { key: 'EX_SEETHROUGH', tags: ['see_through'] },
-  { key: 'EX_NUDE', tags: ['nude', 'topless', 'completely_nude'] },
-  { key: 'EX_LOLI', tags: ['loli', 'shota'] },
-  { key: 'EX_CAMEL', tags: ['cameltoe', 'spread_legs'] },
-  { key: 'EX_BONDAGE', tags: ['bondage'] },
+  { key: 'EX_NIPPLE', tags: ['nipple', 'nipples'] },          // 露点（单复数都排）
+  { key: 'EX_PANEL', tags: ['4koma'], on: true },             // 多格漫画（仅 yande.re 有效），默认开
   // 「白色」只按整词匹配：konachan 上 white_hair 有上万条，按段匹配会把白毛角色全灭
-  { key: 'EX_WHITE', tags: ['white'], exact: true, on: true },   // 默认开：白底/纯白画面在桌面组件上很难看
-  // 多格：只有 4koma 在 yande.re 有效（其余 comic/2koma/multiple_views/collage 两站都是 0）
-  { key: 'EX_PANEL', tags: ['4koma'] }
-  // 已删除（两站都搜不到，纯空转）：
-  //   EX_SKETCH sketch_page / reference_sheet / character_sheet
-  //   EX_PLAINBG white_background（Konachan 仅 1 条）/ transparent_background（0）
+  { key: 'EX_WHITE', tags: ['white', 'transparent_background', 'transparent'], exact: true, on: true }   // 白底/透明底在桌面组件上都很难看，默认开
+  // 其余排除项（胖次/内衣/透视/裸体/骆驼趾/萝莉/捆绑）已删除：
+  // 两站标签命中率低、又容易把 q 级素材筛空；需要时用「过滤 · 自定义标签」临时补
 ];
 
 const HARD_LIMIT_KB = 1200;   // 单张超过这个体积就跳过（iOS 桌面画不出来）
@@ -198,55 +191,95 @@ export default async function (ctx) {
 
   let history = readJSON(ctx, K.history);
   if (!Array.isArray(history)) history = [];
-  const historySet = new Set(history.map(String));
+  const historySet = new Set(history.map(String));   // 存的是 uid（md5）
 
   const badSet = new Set(Object.keys(readBad(ctx)));
-  // 不做候选池缓存：每次刷新都实时请求（池子只用来记「上次生效的档位」和翻页游标）。
-  // 缓存一批图再慢慢放，第一张要等整批，还容易被图床当爬虫限流。
+
+  // ── 洗牌袋 ──────────────────────────────────────────────
+  // 一次只向源站要「一页清单」（100 条元数据，不下载图片），本地洗牌后逐张发；
+  // 一袋之内绝不重复，袋与袋之间用「允许回放比例」控制重叠。
+  let bag = readJSON(ctx, K.bag) || {};
+  if (bag.sig !== sig || !Array.isArray(bag.items)) bag = { sig, items: [], srcTurn: bag.srcTurn || 0 };
+  const shown = readJSON(ctx, K.shown) || {};
+
   let candidate = null;
-  const seenItems = [];              // 本次搜到的全部图，用来在「没新图」时轮换
+  let recycled = false;
   let searches = 0;
   let lastError = '';
   let errorStatus = null;
 
-  // 池子里只放「严格符合设置」的图；池子空了才去查，最多 3 轮
-  //   随机 → 每次换一个随机页（每页都是新的一批）
-  //   热度/最新 → 按 1..10 页顺序往后翻（排序稳定，翻页才有意义）
-  while (!candidate && searches < 3) {
-    try {
-      const yandeRandomWithDate = cfg.site === 'yande' && cfg.sort === 'random' && !!cfg.dateFilter;
-      const page = cfg.sort === 'random'
-        ? (yandeRandomWithDate ? 1 + Math.floor(Math.random() * 20) : 1 + Math.floor(Math.random() * 3))
-        : Math.max(1, pool.page || 1);
-      const res = await search(ctx, cfg, page, pool.plan, badSet, historySet);
-      if (cfg.sort !== 'random') pool.page = page >= 10 ? 1 : page + 1;
-      searches++;
-
-      const usable = (res.fresh && res.fresh.length) ? res.fresh : [];
-      (res.items.length ? res.items : (res.stale || [])).forEach(it => seenItems.push(it));
-      const tier = res.ok ? (res.plan || null) : null;
-      if (res.ok) {
-        pool.plan = tier;                // 只记住这次生效的档位，下次直接一次请求
-      }
-      pool.sig = sig;
-
-      if (usable.length) candidate = usable[Math.floor(Math.random() * usable.length)];
-      writeJSON(ctx, poolKey, pool);     // 抽走的那张必须落盘，否则下次还从同一批里挑
-      if (candidate) break;
-      if (!usable.length) break;   // 放宽链已经走到头还没有新图，别再来一轮浪费请求
-    } catch (e) {
-      lastError = (e && e.message) || '搜索失败';
-      errorStatus = e && e.status ? e.status : null;
-      break;
+  // ① 按比例「回放」最久没出现的一张（默认 20%，均匀撒开，不会连着撞同一张）
+  if (cfg.repeatPct > 0 && history.length && Math.random() * 100 < cfg.repeatPct) {
+    const holdId = cached && (cached.uid || cached.id) ? String(cached.uid || cached.id) : '';
+    for (let i = 0; i < history.length; i++) {
+      if (history.length - i <= 8) break;          // 最近 8 次出现过的就别回放了，免得“刚看完又看到”
+      const id = String(history[i]);
+      const it = shown[id];
+      if (it && it.sample && id !== holdId && !badSet.has(id)) { candidate = it; recycled = true; break; }
     }
   }
 
-  // 可用的图全被防重复窗口挡掉了（素材本来就少）→ 轮换一张别的，别原样重放上一张
-  let recycled = false;
-  if (!candidate && seenItems.length) {
-    const hold = cached && cached.id ? String(cached.id) : '';
-    const alt = seenItems.filter(it => it && it.sample && String(it.id) !== hold && !badSet.has(String(it.id)));
-    if (alt.length) { candidate = alt[Math.floor(Math.random() * alt.length)]; recycled = true; }
+  // ② 否则从袋里拿一张；袋空就补一袋
+  while (!candidate && searches < 4) {
+    if (!bag.items.length) {
+      // 一页里常有“批量上传大户”占掉大半（实测某画师一个月内几十张），
+      // 所以按画师去重后往往不够装一袋 → 再取一页合并，最多 3 页
+      let acc = [];
+      let pages = 0;
+      while (pages < 3 && acc.length < cfg.bagSize && searches < 6) {
+        try {
+          const yandeRandomWithDate = cfg.site === 'yande' && cfg.sort === 'random' && !!cfg.dateFilter;
+          const page = cfg.sort === 'random'
+            ? (yandeRandomWithDate ? 1 + Math.floor(Math.random() * 20) : 1 + Math.floor(Math.random() * 3))
+            : Math.max(1, pool.page || 1);
+
+          // 时段切块：从「月份袋」里抽一个自然月，只在这个月里取图
+          let c = cfg;
+          if (cfg.monthSlice && cfg.periodDays > 0 && cfg.sort !== 'date' && !bag.noMonth) {
+            if (!Array.isArray(bag.months) || !bag.months.length) bag.months = shuffleArr(monthKeys(cfg.periodDays));
+            const mk = bag.months.shift();
+            const rg = monthRange(mk);
+            c = Object.assign({}, cfg, { dateFilter: 'date:' + rg.from + '..' + rg.to, monthLock: true, monthLabel: mk });
+            bag.lastMonth = mk;
+          }
+          // 回到「Konachan 优先，空了才用 yande」；不再两源轮换（两站图基本重合，轮换没好处）
+          const res = await search(ctx, c, page, pool.plan, badSet, historySet);
+          pages++;
+          searches++;
+          if (cfg.sort !== 'random') pool.page = page >= 10 ? 1 : page + 1;
+          if (res.ok) pool.plan = res.plan || null;
+          pool.sig = sig;
+          writeJSON(ctx, poolKey, pool);
+
+          const got = (res.fresh && res.fresh.length) ? res.fresh : (res.items || []);
+          const unseen = got.filter(it => !historySet.has(String(it.uid)) && !badSet.has(String(it.uid)));
+          const add = unseen.length ? unseen : got.filter(it => !badSet.has(String(it.uid))).slice(0, 3);
+          if (!add.length) continue;      // 这页/这个月没货 → 换下一页（最多 3 页），别直接放弃
+          // 跨页也去重（同一张图两页都可能出现）
+          const have = new Set(acc.map(it => String(it.uid)));
+          add.forEach(it => { if (!have.has(String(it.uid))) { have.add(String(it.uid)); acc.push(it); } });
+        } catch (e) {
+          lastError = (e && e.message) || '搜索失败';
+          errorStatus = e && e.status ? e.status : null;
+          break;
+        }
+      }
+      if (!acc.length && cfg.monthSlice && cfg.periodDays > 0 && cfg.sort !== 'date' && !bag.noMonth) {
+        bag.noMonth = true;              // 按月的这一轮全空 → 下一轮不切月，用整个时段兜底
+        bag.items = [];
+        writeJSON(ctx, K.bag, bag);
+        continue;
+      }
+      bag.items = shuffleArr(dedupeVariants(acc, cfg.variantDedupe, cfg.artistDedupe)).slice(0, cfg.bagSize);
+      // 一袋装不满（素材太薄，比如只勾工口）→ 下次别切月了，用整个时段兜，池子大得多
+      bag.noMonth = bag.items.length < Math.min(12, cfg.bagSize);
+      writeJSON(ctx, K.bag, bag);
+      if (!bag.items.length) break;
+    }
+    if (bag.items.length) {
+      candidate = bag.items.shift();
+      writeJSON(ctx, K.bag, bag);
+    }
   }
 
   if (!candidate) {
@@ -275,18 +308,20 @@ export default async function (ctx) {
         // 图床的 307/HTML 多数是暂时的（yande 会间歇性把 sample 跳回图片页）
         // 先原样重试一次，还不行再换一张；都不算坏图
         if (!retriedSame) { retriedSame = true; continue; }
-        badSet.add(String(candidate.id));
+        badSet.add(String(candidate.uid));
         retriedSame = false;
         if (++transientHits >= 3) break;
       } else {
-        badSet.add(String(candidate.id));
-        markBad(ctx, candidate.id);               // 这张真下不来，7 天内不再试
+        badSet.add(String(candidate.uid));
+        markBad(ctx, candidate.uid);               // 这张真下不来，7 天内不再试
       }
+      // 换袋子里下一张（不会再去试这张坏图）
       candidate = null;
-      {
-        const alt = seenItems.filter(it => it && it.sample && !historySet.has(String(it.id)) && !badSet.has(String(it.id)));
-        if (alt.length) candidate = alt[Math.floor(Math.random() * alt.length)];
+      while (bag.items.length && !candidate) {
+        const next = bag.items.shift();
+        if (next && !badSet.has(String(next.uid)) && !historySet.has(String(next.uid))) candidate = next;
       }
+      writeJSON(ctx, K.bag, bag);
       writeJSON(ctx, poolKey, pool);
     }
   }
@@ -300,6 +335,7 @@ export default async function (ctx) {
   const meta = candidate.meta || { sc: 0, pd: 0, rl: 0, tf: 0 };
   const entry = {
     id: candidate.id,
+    uid: candidate.uid,
     ar: candidate.sampleW && candidate.sampleH ? +(candidate.sampleW / candidate.sampleH).toFixed(2) : null,
     dim: candidate.sampleW && candidate.sampleH ? `${candidate.sampleW}×${candidate.sampleH}` : '',
     rating: candidate.rating,
@@ -325,23 +361,41 @@ export default async function (ctx) {
 
   const cacheOk = writeJSON(ctx, K.cache + family, entry);
   if (!cacheOk) entry.cacheFailed = true;
-  const hi = history.findIndex(x => String(x) === String(candidate.id));
+  const hi = history.findIndex(x => String(x) === String(candidate.uid));
   if (hi >= 0) history.splice(hi, 1);
-  history.push(candidate.id);
+  history.push(candidate.uid);
   while (history.length > cfg.maxHistory) history.shift();
   writeJSON(ctx, K.history, history);
+  // 记住最近展示过的图（只留元数据，不含 base64），供「回放」用
+  shown[String(candidate.uid)] = {
+    id: candidate.id, uid: candidate.uid, site: candidate.site, page: candidate.page, sample: candidate.sample,
+    sampleW: candidate.sampleW, sampleH: candidate.sampleH, sampleSize: candidate.sampleSize,
+    rating: candidate.rating, score: candidate.score, tags: candidate.tags, meta: candidate.meta
+  };
+  const keepShown = {};
+  history.slice(-300).forEach(id => { const k = String(id); if (shown[k]) keepShown[k] = shown[k]; });
+  writeJSON(ctx, K.shown, keepShown);
   ctx.storage.set(K.lastShow + family, String(now));
   writeJSON(ctx, K.debug, {
     at: now, id: candidate.id, site: candidate.site, ar: entry.ar, dim: entry.dim,
     sizeKb: entry.sizeKb, rating: candidate.rating, tags: cfg.tagsJoined,
     meta, searches, cacheOk
   });
-  prunePools(ctx, cfg.ratioLabel);
 
   return buildWidget(entry, family, cfg, nextIso(cfg.cooldownMin > 0 ? cfg.cooldownMin : 15));
 }
 
 /* ============================ 配置 ============================ */
+
+// 洗牌参数不再暴露成变量：按「排序」自动套用一套预设
+//   随机 = 大袋子、按月切块、不回放
+//   热度 = 小袋子、按月切块、10% 回放（榜单走完一定会回头）
+//   最新 = 更小的袋子、不切月、不回放（袋子一大就不“最新”了）
+const SORT_PRESETS = {
+  random: { bagSize: 50, monthSlice: true,  variantDedupe: true, artistDedupe: false, repeatPct: 0 },
+  score:  { bagSize: 30, monthSlice: true,  variantDedupe: true, artistDedupe: false, repeatPct: 10 },
+  date:   { bagSize: 20, monthSlice: false, variantDedupe: true, artistDedupe: false, repeatPct: 0 }
+};
 
 function readConfig(env, family) {
   const s = (k, d) => {
@@ -378,8 +432,9 @@ function readConfig(env, family) {
   })();
   const allowed = rawAllowed.length ? rawAllowed : ['s'];   // 全关掉就按全年龄，别把自己筛空
 
-  const ownKey = RATIO_BY_FAMILY[family];
-  const ratioLabel = s(ownKey, '') || DEFAULT_RATIO[family] || '智能·标准';
+  // 画幅：一个变量管所有尺寸。「自动」= 小方 / 中横 / 大方 / 超大横
+  const ratioSel = s('RATIO_MODE', '自动');
+  const ratioLabel = ratioSel === '自动' ? (DEFAULT_RATIO[family] || '横图') : ratioSel;
   const ratioMode = ratioLabel === '不限' ? 'any' : 'band';
   const customOn = bool('RATIO_CUSTOM', true);      // 开箱即用：默认按理想比例 ±10% 收
   const tolPct = Math.min(50, Math.max(5, int('RATIO_TOL', 10, 5, 50)));   // 留空默认 10%，限制 5~50
@@ -392,6 +447,7 @@ function readConfig(env, family) {
 
   const sortLabel = s('SORT', '随机');
   const sort = /热度|score/i.test(sortLabel) ? 'score' : (/最新|date/i.test(sortLabel) ? 'date' : 'random');
+  const preset = SORT_PRESETS[sort] || SORT_PRESETS.random;
 
   // 时段：yande.re 支持 date:>YYYY-MM-DD（也支持 date:A..B），不支持 age:
   // 「最新」本身就是时间倒序，时段没意义 → 忽略
@@ -453,8 +509,14 @@ function readConfig(env, family) {
     minW: int('MIN_W', 1024, 200, 4000),
     minScore: 0,        // v6.0 起不提供最低评分选项：实测高分档候选集太小，只会原地轮换
     cooldownMin: int('COOLDOWN', 30, 0, 24 * 60),
-    maxHistory: int('NO_REPEAT', 100, 1, 2000),
+    maxHistory: 200,   // 固定值，不再暴露成变量（洗牌袋模式下 200 足够）
     showInfo: bool('SHOW_INFO', false),   // 默认不显示，想看再手动打开
+    // 洗牌参数由「排序」决定（见 SORT_PRESETS），不再单独暴露成变量
+    repeatPct: preset.repeatPct,
+    bagSize: preset.bagSize,
+    monthSlice: preset.monthSlice,
+    artistDedupe: preset.artistDedupe,
+    variantDedupe: preset.variantDedupe,
     debug: bool('DEBUG', false),
     timeoutMs: 20000
   };
@@ -480,7 +542,7 @@ function uiSignature(cfg) {
 }
 
 function signature(cfg) {
-  return [cfg.tagsJoined, cfg.sort, cfg.dateFilter, cfg.site, cfg.ratioLabel, cfg.customOn ? 'C' + cfg.tolPct : 'L', cfg.ratingAllowed.join(''), cfg.minW, cfg.minScore, cfg.excludeSeg.join(',') + '|' + cfg.excludeExact.join(',')].join('|');
+  return [cfg.tagsJoined, cfg.sort, cfg.dateFilter, cfg.site, cfg.ratioLabel, cfg.customOn ? 'C' + cfg.tolPct : 'L', cfg.ratingAllowed.join(''), cfg.minW, cfg.minScore, cfg.excludeSeg.join(',') + '|' + cfg.excludeExact.join(','), cfg.repeatPct, cfg.bagSize, cfg.monthSlice].join('|');
 }
 
 function nextIso(minutes) {
@@ -494,9 +556,13 @@ function emptyHint(cfg) {
 
 /* ============================ 搜索 ============================ */
 
-function hostsFor(cfg) {
+function konachanHostFor(cfg) {
   const wantsAdult = cfg.ratingAllowed.some(k => k === 'q' || k === 'e');
-  const kHost = wantsAdult ? 'konachanR18' : 'konachan';
+  return wantsAdult ? 'konachanR18' : 'konachan';
+}
+
+function hostsFor(cfg) {
+  const kHost = konachanHostFor(cfg);
   if (cfg.site === 'yande') return ['yande'];
   if (cfg.site === 'konachan') return [kHost];
   return [kHost, 'yande'];          // 自动：Konachan 先（量大、一次给 100 条），空了再 yande.re
@@ -508,7 +574,7 @@ function hostsFor(cfg) {
 function buildTagString(cfg, useTags) {
   // yande.re 的 order:random 叠加 date: 只回 0~3 条（服务端毛病），
   // 这时改用 order:date + 随机页：仍然是“随机挑一批”，但落在时段内且数量正常
-  const yandeRandomWithDate = cfg.site === 'yande' && cfg.sort === 'random' && !!cfg.dateFilter;
+  const yandeRandomWithDate = (cfg.site === 'yande' || cfg.forceOrderDate) && cfg.sort === 'random' && !!cfg.dateFilter;
   const parts = ['order:' + (yandeRandomWithDate ? 'date' : (cfg.sort || 'random'))];   // 必须第一个，否则排序失效
   if (useTags && cfg.tags.length) parts.push(...cfg.tags);
   if (cfg.ratingTag) parts.push(cfg.ratingTag);
@@ -586,7 +652,7 @@ function buildAttempts(cfg, plan) {
   });
 
   // 时段阶梯：保住评分
-  if (cfg.dateFilter) {
+  if (cfg.dateFilter && !cfg.monthLock) {
     let days = PERIOD_LADDER.filter(d => d > (cfg.periodDays || 0));
     // yande.re 的 order:random 叠加 date 几乎必空（实测 0~3 条），中间档位纯浪费请求，直接跳到不限
     if (cfg.site === 'yande' && cfg.sort === 'random') days = [];
@@ -612,8 +678,8 @@ function buildAttempts(cfg, plan) {
   return list;
 }
 
-async function search(ctx, cfg, page, plan, skipSet, historySet) {
-  const hosts = hostsFor(cfg);
+async function search(ctx, cfg, page, plan, skipSet, historySet, hostOrder) {
+  const hosts = hostOrder || hostsFor(cfg);
   const pg = Math.max(1, page | 0);
   let budget = 16;                // 单次搜索请求上限，防止放宽链把小组件拖超时
   let lastErr = null;
@@ -630,9 +696,11 @@ async function search(ctx, cfg, page, plan, skipSet, historySet) {
       if (budget <= 0) return { items: [] };
       budget--;
       const host = hostList[i];
-      const url = HOSTS[host] + '?tags=' + encodeURIComponent(buildTagString(c, useTags)) + '&limit=100&page=' + pg;
+      // 轮到 yande 且带时段时，它的 order:random 只回 0~3 条 → 换成 order:date
+      const cc = (host === 'yande' && c.sort === 'random' && c.dateFilter) ? Object.assign({}, c, { forceOrderDate: true }) : c;
+      const url = HOSTS[host] + '?tags=' + encodeURIComponent(buildTagString(cc, useTags)) + '&limit=100&page=' + pg;
       try {
-        const items = normalize(await fetchJson(ctx, url, c), host, sent)
+        const items = normalize(await fetchJson(ctx, url, cc), host, sent)
           .filter(it => passesFilter(it, c) && !(skipSet && skipSet.has(String(it.id))));   // 下不下来的图直接当不存在，好让放宽链继续往下走
         okHosts.push(host);
         if (!items.length) continue;
@@ -710,6 +778,15 @@ function normalize(list, host, meta) {
       height: Number(p.height) || 0,
       rating: p.rating || '',
       score: Number(p.score) || 0,
+      md5: p.md5 || '',
+      creator: p.creator_id || p.author || '',
+      parent: p.parent_id || 0,
+      srcKey: (() => {
+        const m = String(p.source || '').match(/pixiv\.net\/(?:[a-z]{2}\/)?artworks\/(\d+)/i);
+        return m ? 'p' + m[1] : '';
+      })(),
+      // 跨站去重键：同一张画在两站 md5 相同，用它当历史/坏图的 key
+      uid: (p.md5 ? 'm' + p.md5 : 'i' + host + '_' + p.id),
       tags: p.tags || '',
       meta: m            // 这批图是按哪个档位抓来的（sc=评分下限 / pd=时段天数 / rl=画幅退回粗分档 / tf=丢了标签）
     };
@@ -769,6 +846,64 @@ function passesFilter(it, cfg) {
 }
 
 /* ============================ 选图 ============================ */
+
+// 把「最近 N 天」展开成自然月列表（倒序），用于时段切块
+function monthKeys(days) {
+  const out = [];
+  const now = new Date();
+  const oldest = new Date(Date.now() - Math.max(1, days) * 86400000);
+  let y = now.getFullYear(), m = now.getMonth();
+  for (let i = 0; i < 400; i++) {
+    if (y < oldest.getFullYear() || (y === oldest.getFullYear() && m < oldest.getMonth())) break;
+    out.push(y + '-' + String(m + 1).padStart(2, '0'));
+    m--; if (m < 0) { m = 11; y--; }
+  }
+  return out;
+}
+
+function monthRange(key) {
+  const parts = String(key).split('-');
+  const y = Number(parts[0]), m = Number(parts[1]);
+  const last = new Date(y, m, 0).getDate();
+  return { from: key + '-01', to: key + '-' + String(last).padStart(2, '0') };
+}
+
+// 同一个画师常一次上传一整套（草稿/差分/裁切），md5 不同但看起来一样。
+// 这里按「同 pixiv 作品 / 父子变体 / 同画师」三道筛，一袋里每个画师最多留 1 张。
+function dedupeVariants(list, doVariant, doArtist) {
+  const srcSeen = {};
+  const artistSeen = {};
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    const it = list[i];
+    if (doVariant) {
+      if (it.parent) continue;                    // 子图（同一张画的变体）直接跳过
+      if (it.srcKey) {
+        if (srcSeen[it.srcKey]) continue;         // 同一 pixiv 作品只留一张
+        srcSeen[it.srcKey] = 1;
+      }
+    }
+    if (doArtist) {
+      const who = String(it.creator || '');
+      if (who) {
+        if (artistSeen[who]) continue;             // 一袋里每个画师最多 1 张
+        artistSeen[who] = 1;
+      }
+    }
+    out.push(it);
+  }
+  return out;
+}
+
+// Fisher-Yates 洗牌
+function shuffleArr(arr) {
+  const a = (arr || []).slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = a[i]; a[i] = a[j]; a[j] = t;
+  }
+  return a;
+}
 
 /* ============================ 下载 ============================ */
 
@@ -992,16 +1127,4 @@ function markBad(ctx, id) {
   writeJSON(ctx, K.bad, o);
 }
 
-// 画幅改了以后，旧画幅的池子没人用，顺手清掉（只清我们确定存在的那几个 key）
-function prunePools(ctx, keepLabel) {
-  const keep = { 不限: 1 };
-  if (keepLabel) keep[keepLabel] = 1;
-  Object.keys(RATIO_BY_FAMILY).forEach(f => {
-    const v = ctx.env && ctx.env[RATIO_BY_FAMILY[f]];
-    keep[(v && String(v).trim()) || DEFAULT_RATIO[f] || ''] = 1;
-  });
-  ['方图', '横图', '竖图'].forEach(l => {
-    if (keep[l]) return;
-    try { if (ctx.storage.get(K.pool + l) !== undefined) ctx.storage.set(K.pool + l, ''); } catch (e) {}
-  });
-}
+
