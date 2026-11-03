@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v4.8';
+const SCRIPT_VER = 'v4.9';
 
 // konachan 有两个域名：.net 是纯净镜像（只有 s），.com 才含 q/e。
 // 勾了擦边/工口就自动换 .com，只勾全年龄就用 .net。
@@ -203,7 +203,10 @@ export default async function (ctx) {
   const historySet = new Set(history.map(String));
 
   const badSet = new Set(Object.keys(readBad(ctx)));
-  let candidate = pickFromPool(pool, historySet, cfg, badSet);
+  // 换图间隔 = 0（每次刷新都换）时不走候选池：池子是为了在间隔内省请求的，
+  // 留着它会让你反复刷也拿不到新图（测试时最容易被这个坑到）
+  const usePool = cfg.cooldownMin > 0;
+  let candidate = usePool ? pickFromPool(pool, historySet, cfg, badSet) : null;
   const seenItems = [];              // 本次搜到的全部图，用来在「没新图」时轮换
   let searches = 0;
   let lastError = '';
@@ -227,14 +230,21 @@ export default async function (ctx) {
       const sameTier = tier ? sameMeta(pool.plan, tier) : !pool.plan;
       if (!sameTier) pool.items = [];
       if (res.ok) {
-        const have = new Set(pool.items.map(it => String(it.id)));
-        const added = res.items.filter(it => !have.has(String(it.id)) && !badSet.has(String(it.id)));
-        pool.items = pool.items.concat(added).slice(-MAX_POOL);
-        pool.plan = tier;                // 记住这次生效的档位，下次直接一次请求，且这批图可以继续用
+        if (usePool) {
+          const have = new Set(pool.items.map(it => String(it.id)));
+          const added = res.items.filter(it => !have.has(String(it.id)) && !badSet.has(String(it.id)));
+          pool.items = pool.items.concat(added).slice(-MAX_POOL);
+        }
+        pool.plan = tier;                // 记住这次生效的档位，下次直接一次请求
       }
       pool.sig = sig;
 
-      candidate = pickFromPool(pool, historySet, cfg, badSet);
+      if (usePool) {
+        candidate = pickFromPool(pool, historySet, cfg, badSet);
+      } else {
+        const fresh = res.items.filter(it => !historySet.has(String(it.id)) && !badSet.has(String(it.id)));
+        if (fresh.length) candidate = fresh[Math.floor(Math.random() * fresh.length)];
+      }
       writeJSON(ctx, poolKey, pool);     // 抽走的那张必须落盘，否则下次还从同一批里挑
       if (candidate) break;
       if (!res.items.length) break;
@@ -279,7 +289,11 @@ export default async function (ctx) {
         badSet.add(String(candidate.id));
         markBad(ctx, candidate.id);               // 这张真下不来，7 天内不再试
       }
-      candidate = pickFromPool(pool, historySet, cfg, badSet);
+      candidate = usePool ? pickFromPool(pool, historySet, cfg, badSet) : null;
+      if (!candidate && !usePool) {
+        const alt = seenItems.filter(it => it && it.sample && !historySet.has(String(it.id)) && !badSet.has(String(it.id)));
+        if (alt.length) candidate = alt[Math.floor(Math.random() * alt.length)];
+      }
       writeJSON(ctx, poolKey, pool);
     }
   }
