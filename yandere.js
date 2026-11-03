@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v5.7';
+const SCRIPT_VER = 'v5.8';
 
 // konachan 有两个域名：.net 是纯净镜像（只有 s），.com 才含 q/e。
 // 勾了擦边/工口就自动换 .com，只勾全年龄就用 .net。
@@ -97,7 +97,7 @@ function normalizeTag(tag) {
 const BAND_LOOSE = { '横图': [1.35, 99], '方图': [0.75, 1.35], '竖图': [0, 0.75] };
 const IDEAL_AR = { '横图': 1.78, '方图': 1.33, '竖图': 0.71 };   // 方图按 booru 实际比例 4:3 算，不再是 1.00
 // 时段兜底用的阶梯（天）：评分实在降不下来时，先小幅放宽时段，而不是直接跳到「不限」
-const PERIOD_LADDER = [1, 3, 7, 14, 30, 90, 180, 365, 730, 1095];
+const PERIOD_LADDER = [1, 3, 7, 14, 30, 90, 180, 365, 730, 1095, 2190];
 
 const RATIO_BY_FAMILY = {
   systemSmall: 'RATIO_SMALL',
@@ -388,10 +388,10 @@ function readConfig(env, family) {
 
   // 时段：yande.re 支持 date:>YYYY-MM-DD（也支持 date:A..B），不支持 age:
   // 「最新」本身就是时间倒序，时段没意义 → 忽略
-  const periodLabel = s('PERIOD', '不限');
+  const periodLabel = s('PERIOD', '六年内');
   const periodDays = {
     '一天内': 1, '一周内': 7, '一个月内': 30, '三个月内': 90,
-    '半年内': 180, '一年内': 365, '两年内': 730, '三年内': 1095
+    '半年内': 180, '一年内': 365, '两年内': 730, '三年内': 1095, '六年内': 2190
   }[periodLabel] || 0;
   const dateFilter = (periodDays > 0 && sort !== 'date') ? 'date:>' + ymdDaysAgo(periodDays) : '';
 
