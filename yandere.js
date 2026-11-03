@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v5.4';
+const SCRIPT_VER = 'v5.5';
 
 // konachan 有两个域名：.net 是纯净镜像（只有 s），.com 才含 q/e。
 // 勾了擦边/工口就自动换 .com，只勾全年龄就用 .net。
@@ -375,7 +375,7 @@ function readConfig(env, family) {
   const ratioLabel = s(ownKey, '') || DEFAULT_RATIO[family] || '智能·标准';
   const ratioMode = ratioLabel === '不限' ? 'any' : 'band';
   const customOn = bool('RATIO_CUSTOM', false);
-  const tolPct = Math.min(50, Math.max(5, int('RATIO_TOL', 15, 5, 50)));   // 留空默认 15%，限制 5~50
+  const tolPct = Math.min(50, Math.max(5, int('RATIO_TOL', 10, 5, 50)));   // 留空默认 10%，限制 5~50
   const band = (() => {
     if (!BAND_LOOSE[ratioLabel]) return null;                              // 「不限」不筛
     if (!customOn) return BAND_LOOSE[ratioLabel];
