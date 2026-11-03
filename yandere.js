@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v4.9';
+const SCRIPT_VER = 'v5.0';
 
 // konachan 有两个域名：.net 是纯净镜像（只有 s），.com 才含 q/e。
 // 勾了擦边/工口就自动换 .com，只勾全年龄就用 .net。
@@ -220,11 +220,12 @@ export default async function (ctx) {
       const page = cfg.sort === 'random'
         ? 1 + Math.floor(Math.random() * 3)
         : Math.max(1, pool.page || 1);
-      const res = await search(ctx, cfg, page, pool.plan, badSet);
+      const res = await search(ctx, cfg, page, pool.plan, badSet, historySet);
       if (cfg.sort !== 'random') pool.page = page >= 10 ? 1 : page + 1;
       searches++;
 
-      res.items.forEach(it => seenItems.push(it));
+      const usable = (res.fresh && res.fresh.length) ? res.fresh : [];
+      (res.items.length ? res.items : (res.stale || [])).forEach(it => seenItems.push(it));
       const tier = res.ok ? (res.plan || null) : null;
       // 档位换了 → 池子里那批图不再符合，整批作废，别混着用
       const sameTier = tier ? sameMeta(pool.plan, tier) : !pool.plan;
@@ -232,7 +233,7 @@ export default async function (ctx) {
       if (res.ok) {
         if (usePool) {
           const have = new Set(pool.items.map(it => String(it.id)));
-          const added = res.items.filter(it => !have.has(String(it.id)) && !badSet.has(String(it.id)));
+          const added = usable.filter(it => !have.has(String(it.id)) && !badSet.has(String(it.id)));
           pool.items = pool.items.concat(added).slice(-MAX_POOL);
         }
         pool.plan = tier;                // 记住这次生效的档位，下次直接一次请求
@@ -241,13 +242,12 @@ export default async function (ctx) {
 
       if (usePool) {
         candidate = pickFromPool(pool, historySet, cfg, badSet);
-      } else {
-        const fresh = res.items.filter(it => !historySet.has(String(it.id)) && !badSet.has(String(it.id)));
-        if (fresh.length) candidate = fresh[Math.floor(Math.random() * fresh.length)];
+      } else if (usable.length) {
+        candidate = usable[Math.floor(Math.random() * usable.length)];
       }
       writeJSON(ctx, poolKey, pool);     // 抽走的那张必须落盘，否则下次还从同一批里挑
       if (candidate) break;
-      if (!res.items.length) break;
+      if (!usable.length) break;   // 放宽链已经走到头还没有新图，别再来一轮浪费请求
     } catch (e) {
       lastError = (e && e.message) || '搜索失败';
       errorStatus = e && e.status ? e.status : null;
@@ -256,10 +256,11 @@ export default async function (ctx) {
   }
 
   // 可用的图全被防重复窗口挡掉了（素材本来就少）→ 轮换一张别的，别原样重放上一张
+  let recycled = false;
   if (!candidate && seenItems.length) {
     const hold = cached && cached.id ? String(cached.id) : '';
     const alt = seenItems.filter(it => it && it.sample && String(it.id) !== hold && !badSet.has(String(it.id)));
-    if (alt.length) candidate = alt[Math.floor(Math.random() * alt.length)];
+    if (alt.length) { candidate = alt[Math.floor(Math.random() * alt.length)]; recycled = true; }
   }
 
   if (!candidate) {
@@ -323,6 +324,7 @@ export default async function (ctx) {
     scoreRelaxed: cfg.minScore > 0 && (candidate.score || 0) < cfg.minScore,
     scoreCfg: cfg.minScore,
     ratioRelaxed: !!meta.rl,
+    recycled,                     // true = 库尽，这张是看过的图轮换出来的
     searches,
     uiSig: uiSignature(cfg),
     sig,
@@ -616,13 +618,15 @@ function buildAttempts(cfg, plan) {
   return list;
 }
 
-async function search(ctx, cfg, page, plan, skipSet) {
+async function search(ctx, cfg, page, plan, skipSet, historySet) {
   const hosts = hostsFor(cfg);
   const pg = Math.max(1, page | 0);
   let budget = 16;                // 单次搜索请求上限，防止放宽链把小组件拖超时
   let lastErr = null;
   let rateLimited = false;
   const okHosts = [];
+
+  const stalePool = [];        // 这一档有图、但全被防重复窗口挡住了 → 当作「库尽」，往下放宽
 
   const call = async (c, useTags, hostList) => {
     // tf = 这次查询是否把用户标签丢了（没有标签时不算丢）
@@ -637,7 +641,10 @@ async function search(ctx, cfg, page, plan, skipSet) {
         const items = normalize(await fetchJson(ctx, url, c), host, sent)
           .filter(it => passesFilter(it, c) && !(skipSet && skipSet.has(String(it.id))));   // 下不下来的图直接当不存在，好让放宽链继续往下走
         okHosts.push(host);
-        if (items.length) return { items, host, meta: sent };
+        if (!items.length) continue;
+        const fresh = historySet ? items.filter(it => !historySet.has(String(it.id))) : items;
+        if (fresh.length) return { items, fresh, host, meta: sent };
+        stalePool.push.apply(stalePool, items);   // 全看过 → 记下来兜底，同时让链继续降档
       } catch (e) {
         lastErr = e;              // 某个源挂了 → 试下一个
         if (e && e.status === 429) { rateLimited = true; return { items: [] }; }   // 限流了就别再连环请求
@@ -657,7 +664,7 @@ async function search(ctx, cfg, page, plan, skipSet) {
     const r = await call(a.cfg, a.useTags, hostList);
     if (r.items.length) {
       return {
-        items: r.items, host: r.host, ok: true,
+        items: r.items, fresh: r.fresh, host: r.host, ok: true,
         meta: r.meta,
         plan: sameMeta(r.meta, strictMeta(cfg)) ? null : r.meta
       };
@@ -665,7 +672,7 @@ async function search(ctx, cfg, page, plan, skipSet) {
   }
   // 只要有源正常回过（哪怕 0 条），就不算失败；偶发超时不该让整个组件显示「加载失败」
   if (lastErr && (okHosts.length === 0 || rateLimited)) throw lastErr;
-  return { items: [], ok: false, meta: null, plan: null };
+  return { items: [], fresh: [], stale: stalePool, ok: false, meta: null, plan: null };
 }
 
 async function fetchJson(ctx, url, cfg) {
@@ -873,6 +880,7 @@ function buildWidget(entry, family, cfg, refreshAfter) {
       text: `${SCRIPT_VER} ${entry.site} ${entry.ar || '-'} ${cfg.ratioLabel} ${entry.rating || '-'}`
         + `${entry.sizeKb ? ' ' + entry.sizeKb + 'KB' : ''}`
         + ` ${cfg.sortLabel}${cfg.dateFilter ? '/' + cfg.periodLabel : ''}`
+        + (entry.recycled ? ' 库尽轮换' : '')
         + (entry.cacheFailed ? ' 缓存写入失败' : '')
         + `${entry.tagFallback ? ' ⚠标签' : ''}${entry.periodRelaxed ? ' ⚠时段' : ''}${entry.scoreRelaxed ? ' ⚠评分' + entry.score + '<' + entry.scoreCfg : ''}${entry.ratioRelaxed ? ' ⚠画幅' : ''}`
         + `${entry.queryTags ? ' 「' + entry.queryTags + '」' : ''} ${entry.searches}搜`,
