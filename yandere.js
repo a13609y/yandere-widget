@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v5.0';
+const SCRIPT_VER = 'v5.1';
 
 // konachan 有两个域名：.net 是纯净镜像（只有 s），.com 才含 q/e。
 // 勾了擦边/工口就自动换 .com，只勾全年龄就用 .net。
@@ -157,7 +157,6 @@ const EXCLUDE_PRESETS = [
   //   EX_PLAINBG white_background（Konachan 仅 1 条）/ transparent_background（0）
 ];
 
-const MAX_POOL = 80;
 const HARD_LIMIT_KB = 1200;   // 单张超过这个体积就跳过（iOS 桌面画不出来）
 // 图床（files.yande.re 等）偶尔会返回风控网页而不是图片，用浏览器 UA 过掉大部分
 const IMG_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1';
@@ -194,8 +193,7 @@ export default async function (ctx) {
   // ── 候选池：按画幅分槽 ────────────────────────────────────────
   const poolKey = K.pool + cfg.ratioLabel;
   let pool = readJSON(ctx, poolKey) || {};
-  if (!Array.isArray(pool.items)) pool.items = [];
-  if (pool.sig !== sig) pool = { items: [], page: 1, sig, plan: null };
+  if (pool.sig !== sig) pool = { page: 1, sig, plan: null };
   if (!pool.page) pool.page = 1;
 
   let history = readJSON(ctx, K.history);
@@ -203,10 +201,9 @@ export default async function (ctx) {
   const historySet = new Set(history.map(String));
 
   const badSet = new Set(Object.keys(readBad(ctx)));
-  // 换图间隔 = 0（每次刷新都换）时不走候选池：池子是为了在间隔内省请求的，
-  // 留着它会让你反复刷也拿不到新图（测试时最容易被这个坑到）
-  const usePool = cfg.cooldownMin > 0;
-  let candidate = usePool ? pickFromPool(pool, historySet, cfg, badSet) : null;
+  // 不做候选池缓存：每次刷新都实时请求（池子只用来记「上次生效的档位」和翻页游标）。
+  // 缓存一批图再慢慢放，第一张要等整批，还容易被图床当爬虫限流。
+  let candidate = null;
   const seenItems = [];              // 本次搜到的全部图，用来在「没新图」时轮换
   let searches = 0;
   let lastError = '';
@@ -227,24 +224,12 @@ export default async function (ctx) {
       const usable = (res.fresh && res.fresh.length) ? res.fresh : [];
       (res.items.length ? res.items : (res.stale || [])).forEach(it => seenItems.push(it));
       const tier = res.ok ? (res.plan || null) : null;
-      // 档位换了 → 池子里那批图不再符合，整批作废，别混着用
-      const sameTier = tier ? sameMeta(pool.plan, tier) : !pool.plan;
-      if (!sameTier) pool.items = [];
       if (res.ok) {
-        if (usePool) {
-          const have = new Set(pool.items.map(it => String(it.id)));
-          const added = usable.filter(it => !have.has(String(it.id)) && !badSet.has(String(it.id)));
-          pool.items = pool.items.concat(added).slice(-MAX_POOL);
-        }
-        pool.plan = tier;                // 记住这次生效的档位，下次直接一次请求
+        pool.plan = tier;                // 只记住这次生效的档位，下次直接一次请求
       }
       pool.sig = sig;
 
-      if (usePool) {
-        candidate = pickFromPool(pool, historySet, cfg, badSet);
-      } else if (usable.length) {
-        candidate = usable[Math.floor(Math.random() * usable.length)];
-      }
+      if (usable.length) candidate = usable[Math.floor(Math.random() * usable.length)];
       writeJSON(ctx, poolKey, pool);     // 抽走的那张必须落盘，否则下次还从同一批里挑
       if (candidate) break;
       if (!usable.length) break;   // 放宽链已经走到头还没有新图，别再来一轮浪费请求
@@ -290,8 +275,8 @@ export default async function (ctx) {
         badSet.add(String(candidate.id));
         markBad(ctx, candidate.id);               // 这张真下不来，7 天内不再试
       }
-      candidate = usePool ? pickFromPool(pool, historySet, cfg, badSet) : null;
-      if (!candidate && !usePool) {
+      candidate = null;
+      {
         const alt = seenItems.filter(it => it && it.sample && !historySet.has(String(it.id)) && !badSet.has(String(it.id)));
         if (alt.length) candidate = alt[Math.floor(Math.random() * alt.length)];
       }
@@ -775,19 +760,6 @@ function passesFilter(it, cfg) {
 }
 
 /* ============================ 选图 ============================ */
-
-function pickFromPool(pool, historySet, cfg, badSet) {
-  if (!pool || !Array.isArray(pool.items) || pool.items.length === 0) return null;
-  const tier = pool.plan || null;      // 池子当前装的是哪一档（null = 严格照用户设置）
-  const fresh = pool.items.filter(it => it && it.sample
-    && (tier ? sameMeta(it.meta, tier) : isStrictMeta(it.meta, cfg))
-    && !historySet.has(String(it.id))
-    && !(badSet && badSet.has(String(it.id))));
-  if (fresh.length === 0) return null;
-  const picked = fresh[Math.floor(Math.random() * fresh.length)];
-  pool.items = pool.items.filter(it => it !== picked);
-  return picked;
-}
 
 /* ============================ 下载 ============================ */
 
