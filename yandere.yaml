@@ -1,17 +1,22 @@
 name: yande.re 动漫图
-description: 从 yande.re / Konachan 按标签取动漫插画，按小组件尺寸匹配画幅；免登录，sample 图 1500px 体积小
+description: 从 yande.re / Konachan 按标签取动漫插画，按小组件尺寸匹配画幅；洗牌袋换图，重复率极低；免登录，sample 图 1500px 体积小
 author: Cuttlefish
 icon: https://raw.githubusercontent.com/a13609y/yandere-widget/main/icon.png
 homepage: https://github.com/a13609y/yandere-widget
 manual: https://github.com/a13609y/yandere-widget#readme
 
-# 设置项顺序：换图间隔 → 分级 → 内容 → 画幅 → 过滤 → 显示（名字前缀就是分组名）
+# 设置项顺序：换图间隔 → 洗牌 → 分级 → 内容 → 画幅 → 过滤 → 显示
 env_schema:
   # ── 换图间隔（最常调，放最上面）──
   COOLDOWN:
     name: 换图间隔（分钟）
     description: "分钟。填 0 = 每次刷新都实时请求新图（想看新图就手动填 0）；>0 = 间隔内直接显示上次那张，不联网。不填时的默认值是 30"
     default_value: "30"
+
+
+
+
+
 
   # ── 分级（s / q / e 三个独立开关，至少留一个）──
   SHOW_S:
@@ -48,7 +53,7 @@ env_schema:
 
   SORT:
     name: 内容 · 排序
-    description: "随机 = 每次抽一批新的（推荐）；热度 = 全站评分降序（会偏老图）；最新 = 发布时间倒序"
+    description: "随机 = 每次抽一批新的（推荐）；热度 = 全站评分降序（会偏老图）；最新 = 发布时间倒序。选哪个就自动套用对应的洗牌参数：随机=每袋50+按月切块+不回放；热度=每袋30+按月切块+10%回放；最新=每袋20+不切月+不回放"
     options: ["随机", "热度", "最新"]
 
     default_value: "随机"
@@ -71,27 +76,11 @@ env_schema:
     description: "仅在上面开关打开时生效，单位 %，可填 5~50；留空按 10。基准比例按 booru 实际分布取：横 1.78 / 方 1.33（4:3，不是 1:1）/ 竖 0.71。例：10 时横图收 1.60~1.96、方图收 1.20~1.46、竖图收 0.64~0.78"
     default_value: "10"
 
-  RATIO_SMALL:
-    name: 画幅 · 小号
-    description: "按实际宽高比：≥1.35 横图、0.75~1.35 方图（近似方也算）、<0.75 竖图"
-    options: ["方图", "横图", "竖图", "不限"]
-    default_value: "方图"
-
-  RATIO_MEDIUM:
-    name: 画幅 · 中号
-    options: ["方图", "横图", "竖图", "不限"]
-    default_value: "横图"
-
-  RATIO_LARGE:
-    name: 画幅 · 大号
-    options: ["方图", "横图", "竖图", "不限"]
-    default_value: "方图"
-
-  RATIO_XLARGE:
-    name: 画幅 · 超大号（iPad）
-    options: ["方图", "横图", "竖图", "不限"]
-
-    default_value: "横图"
+  RATIO_MODE:
+    name: 画幅 · 尺寸适配
+    description: "自动 = 小号方图 / 中号横图 / 大号方图 / 超大号横图（推荐）；也可以四个尺寸统一成方图、横图、竖图或不限。判定按实际宽高比：≥1.35 横、0.75~1.35 方、<0.75 竖"
+    options: ["自动", "方图", "横图", "竖图", "不限"]
+    default_value: "自动"
 
   # ── 过滤 ──
   MIN_W:
@@ -107,57 +96,15 @@ env_schema:
     options: ["true", "false"]
     default_value: "false"
 
-  EX_PANTY:
-    name: 过滤 · 胖次（panties）
-    description: "站点：两站都有"
-    options: ["true", "false"]
-    default_value: "false"
-
-  EX_UNDERWEAR:
-    name: 过滤 · 内衣（underwear / bra）
-    description: "站点：两站都有"
-    options: ["true", "false"]
-    default_value: "false"
-
-  EX_SEETHROUGH:
-    name: 过滤 · 透视（see_through）
-    description: "站点：两站都有"
-    options: ["true", "false"]
-    default_value: "false"
-
-  EX_NUDE:
-    name: 过滤 · 裸体（nude / topless）
-    description: "站点：两站都有；`completely_nude` 仅 yande.re"
-    options: ["true", "false"]
-    default_value: "false"
-
-  EX_CAMEL:
-    name: 过滤 · 骆驼趾（cameltoe / spread_legs）
-    description: "站点：两站都有；`spread_legs` 仅 Konachan"
-    options: ["true", "false"]
-    default_value: "false"
-
-  EX_LOLI:
-    name: 过滤 · 萝莉正太（loli / shota）
-    description: "站点：两站都有；`shota` 主要在 yande.re。默认关，打开素材会少一截"
-    options: ["true", "false"]
-    default_value: "false"
-
-  EX_BONDAGE:
-    name: 过滤 · 捆绑（bondage）
-    description: "站点：两站都有"
-    options: ["true", "false"]
-    default_value: "false"
-
   EX_PANEL:
     name: 过滤 · 多格（4koma）
-    description: "只排 4 格漫画 ｜ 站点：仅 yande.re"
+    description: "只排 4 格漫画 ｜ 站点：仅 yande.re｜默认开：多格图在小组件上基本看不清"
     options: ["true", "false"]
-    default_value: "false"
+    default_value: "true"
 
   EX_WHITE:
-    name: 过滤 · 白色（white）
-    description: "只匹配整词 white，不会误伤 white_hair ｜ 站点：仅 Konachan｜默认开：白底/纯白画面在桌面组件上很脏"
+    name: 过滤 · 白底/透明底
+    description: "整词匹配 white、transparent、transparent_background（不会误伤 white_hair）。默认开：白底和透明底在桌面组件上都很难看"
     options: ["true", "false"]
     default_value: "true"
 
@@ -167,12 +114,6 @@ env_schema:
     default_value: ""
 
   # ── 显示（其余）──
-  NO_REPEAT:
-    name: 显示 · 防重复窗口
-    description: "所有尺寸共用一份历史，显示过的作品在这 N 张内不会再出现"
-    options: ["50", "100", "200", "500"]
-    default_value: "100"
-
   SHOW_INFO:
     name: 显示 · 分辨率
     description: "左下角显示 分辨率 + 收藏数，默认关；想看再手动打开"
