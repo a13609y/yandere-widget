@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v5.3';
+const SCRIPT_VER = 'v5.4';
 
 // konachan 有两个域名：.net 是纯净镜像（只有 s），.com 才含 q/e。
 // 勾了擦边/工口就自动换 .com，只勾全年龄就用 .net。
@@ -95,7 +95,7 @@ function normalizeTag(tag) {
 //   默认（粗分档）：≥1.35 横、0.75~1.35 方、<0.75 竖
 //   打开「自定义容忍」后：按理想比例 ±N%（横 1.78 / 方 1.00 / 竖 0.71），N 默认 15
 const BAND_LOOSE = { '横图': [1.35, 99], '方图': [0.75, 1.35], '竖图': [0, 0.75] };
-const IDEAL_AR = { '横图': 1.78, '方图': 1.00, '竖图': 0.71 };
+const IDEAL_AR = { '横图': 1.78, '方图': 1.33, '竖图': 0.71 };   // 方图按 booru 实际比例 4:3 算，不再是 1.00
 // 时段兜底用的阶梯（天）：评分实在降不下来时，先小幅放宽时段，而不是直接跳到「不限」
 const PERIOD_LADDER = [1, 3, 7, 14, 30, 90, 180, 365, 730, 1095];
 
@@ -558,29 +558,18 @@ function scoreLadder(minScore) {
 }
 
 // 依次尝试的档位序列（严格 → 去标签 → 粗分档 → 评分阶梯 → 时段阶梯 → 全放开）
-// booru 的「方图」大多是 4:3（1.33），理想比例 1.0 ±15%（0.85~1.15）几乎筛不到东西。
-// 容忍低于 MIN_TOL_SQUARE 时直接按粗分档来，别再白跑一次注定空的查询。
-const MIN_TOL_SQUARE = 35;
-
-function ratioHopeless(cfg) {
-  return cfg.customOn && cfg.ratioLabel === '方图' && cfg.tolPct < MIN_TOL_SQUARE;
-}
-
 function buildAttempts(cfg, plan) {
   const strict = strictMeta(cfg);
   const withTags = cfg.tags.length > 0;
   const list = [];
-  const hopeless = ratioHopeless(cfg);
 
   // 上次刷新成功的档位先试一次（避免每次刷新都重走整条链）
   if (plan && !sameMeta(plan, strict)) {
     list.push({ cfg: variantCfg(cfg, plan), useTags: !plan.tf, meta: plan });
   }
-  // 方图 + 过窄容忍：直接按粗分档（并把角标标成 ⚠画幅），省掉一次注定为空的查询
-  if (!hopeless) list.push({ cfg, useTags: true, meta: strict });
-  else list.push({ cfg: variantCfg(cfg, Object.assign({}, strict, { rl: 1 })), useTags: true, meta: Object.assign({}, strict, { rl: 1 }) });
+  list.push({ cfg, useTags: true, meta: strict });
   if (cfg.tags.length) list.push({ cfg, useTags: false, meta: Object.assign({}, strict, { tf: 1 }) });
-  if (cfg.customOn && !hopeless) list.push({ cfg: variantCfg(cfg, Object.assign({}, strict, { rl: 1 })), useTags: withTags, meta: Object.assign({}, strict, { rl: 1 }) });
+  if (cfg.customOn) list.push({ cfg: variantCfg(cfg, Object.assign({}, strict, { rl: 1 })), useTags: withTags, meta: Object.assign({}, strict, { rl: 1 }) });
 
   // 评分阶梯：保住时段
   scoreLadder(cfg.minScore).slice(1).forEach(sc => {
@@ -604,12 +593,11 @@ function buildAttempts(cfg, plan) {
     });
   }
 
-  // 最后兜底：评分不要了、时段不限、画幅一律回粗分档（放着最后一道保险，避免整条链走空）
-  {
-    const c = Object.assign({}, cfg, { minScore: 0, dateFilter: '' });
+  // 最后兜底：评分不要了、时段不限
+  if (cfg.minScore > 0) {
     list.push({
-      cfg: variantCfg(c, { sc: 0, pd: 0, rl: 1, tf: 0 }),
-      useTags: withTags, meta: { sc: 0, pd: 0, rl: 1, tf: 0 }
+      cfg: Object.assign({}, cfg, { minScore: 0, dateFilter: '' }),
+      useTags: withTags, meta: { sc: 0, pd: 0, rl: 0, tf: 0 }
     });
   }
   return list;
