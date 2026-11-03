@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v5.6';
+const SCRIPT_VER = 'v5.7';
 
 // konachan 有两个域名：.net 是纯净镜像（只有 s），.com 才含 q/e。
 // 勾了擦边/工口就自动换 .com，只勾全年龄就用 .net。
@@ -374,7 +374,7 @@ function readConfig(env, family) {
   const ownKey = RATIO_BY_FAMILY[family];
   const ratioLabel = s(ownKey, '') || DEFAULT_RATIO[family] || '智能·标准';
   const ratioMode = ratioLabel === '不限' ? 'any' : 'band';
-  const customOn = bool('RATIO_CUSTOM', false);
+  const customOn = bool('RATIO_CUSTOM', true);      // 开箱即用：默认按理想比例 ±10% 收
   const tolPct = Math.min(50, Math.max(5, int('RATIO_TOL', 10, 5, 50)));   // 留空默认 10%，限制 5~50
   const band = (() => {
     if (!BAND_LOOSE[ratioLabel]) return null;                              // 「不限」不筛
@@ -445,7 +445,7 @@ function readConfig(env, family) {
     ratingAllowed: allowed,
     minW: int('MIN_W', 1024, 200, 4000),
     // 上限锁 200：再高候选集比池子还小，只会来回轮换（见 README 实测）
-    minScore: Math.min(200, int('MIN_SCORE', 0, 0, 200)),
+    minScore: Math.min(200, int('MIN_SCORE', 200, 0, 200)),
     cooldownMin: int('COOLDOWN', 30, 0, 24 * 60),
     maxHistory: int('NO_REPEAT', 100, 1, 2000),
     showInfo: bool('SHOW_INFO', true),
