@@ -18,26 +18,31 @@ env_schema:
     description: "自动 = 先查 Konachan（一次给 100 条、素材多），没结果再试 yande.re。Konachan 会按分级自动换域名：只勾「全年龄」走 konachan.net（纯净镜像），勾了「擦边/工口」自动走 konachan.com（实测 .net 完全不返回 q/e）"
     options: ["自动", "yande.re", "Konachan"]
 
+    default_value: "自动"
   SORT:
     name: 内容 · 排序
     description: "随机 = 每次抽一批新的（推荐）；热度 = 全站评分降序（会偏老图）；最新 = 发布时间倒序"
     options: ["随机", "热度", "最新"]
 
+    default_value: "随机"
   PERIOD:
     name: 内容 · 时段
     description: "只取最近这段时间发布的图。配合「随机/热度」用；选「最新」时自动忽略。时段越短素材越少，评分上限也越低（一年内最高约 190 分，一周内普遍只有 40~60 分）"
     options: ["不限", "一天内", "一周内", "一个月内", "三个月内", "半年内", "一年内", "两年内", "三年内"]
 
+    default_value: "不限"
   MIN_SCORE:
     name: 内容 · 最低评分
     description: "评分低于这个值的直接跳过（服务端就筛，随机抽样也只在达标图里挑），0 = 不限制。实测上限只放到 200 是有原因的：分数是累计值，越高越只剩老图，而「三年内 ≥300 分」全站只剩 49 张、「≥500 分」只剩 3 张 —— 素材比池子和防重复窗口还少，只会原地打转。推荐：一周内 50、一个月内 100、一年内 100~150、三年内或不限 150~200"
     options: ["0", "50", "100", "150", "200"]
+    default_value: "0"
 
   # ── 画幅 ──────────────────────────────────────────────
   RATIO_CUSTOM:
     name: 画幅 · 自定义容忍
-    description: "关 = 粗分档（≥1.35 横 / 0.75~1.35 方 / <0.75 竖）；开 = 按理想比例 ±容忍百分比（横 1.78 / 方 1.00 / 竖 0.71）。画幅选「不限」时此项不生效"
+    description: "关 = 粗分档（≥1.35 横 / 0.75~1.35 方 / <0.75 竖）；开 = 按理想比例 ±容忍百分比（横 1.78 / 方 1.33 / 竖 0.71）。画幅选「不限」时此项不生效"
     options: ["true", "false"]
+    default_value: "false"
   RATIO_TOL:
     name: 画幅 · 容忍百分比
     description: "仅在上面开关打开时生效，单位 %，可填 5~50；留空按 10。基准比例按 booru 实际分布取：横 1.78 / 方 1.33（4:3，不是 1:1）/ 竖 0.71。例：10 时横图收 1.60~1.96、方图收 1.20~1.46、竖图收 0.64~0.78"
@@ -47,76 +52,94 @@ env_schema:
     name: 画幅 · 小号
     description: "按实际宽高比：≥1.35 横图、0.75~1.35 方图（近似方也算）、<0.75 竖图"
     options: ["方图", "横图", "竖图", "不限"]
+    default_value: "方图"
   RATIO_MEDIUM:
     name: 画幅 · 中号
     options: ["方图", "横图", "竖图", "不限"]
+    default_value: "横图"
   RATIO_LARGE:
     name: 画幅 · 大号
     options: ["方图", "横图", "竖图", "不限"]
+    default_value: "方图"
   RATIO_XLARGE:
     name: 画幅 · 超大号（iPad）
     options: ["方图", "横图", "竖图", "不限"]
 
   # ── 分级（s / q / e 三个独立开关，至少留一个）────────────
+    default_value: "横图"
   SHOW_S:
     name: 分级 · 全年龄（s）
     description: "三个开关自由组合；全关掉会自动按「仅全年龄」处理，不会筛空"
     options: ["true", "false"]
+    default_value: "true"
   SHOW_Q:
     name: 分级 · 擦边（q）
     description: "打开后 Konachan 会自动切到 konachan.com（.net 镜像没有 q 级内容）"
     options: ["true", "false"]
+    default_value: "true"
   SHOW_E:
     name: 分级 · 工口（e）
     description: "素材最少，单开时可能要多翻几页。同样会切到 konachan.com"
     options: ["true", "false"]
 
   # ── 过滤 ──────────────────────────────────────────────
+    default_value: "false"
   MIN_W:
     name: 过滤 · 最小短边
     description: "图片短边低于这个值的直接跳过，防止拿到糊图"
     options: ["720", "1024", "1280", "1500"]
 
+    default_value: "1024"
   EX_NIPPLE:
     name: 过滤 · 露点（nipples）
     description: "按 _ 分段匹配，erect_nipples / puffy_nipples 也会一起排掉 ｜ 站点：两站都有（`nipples`）；`nipple` 单数仅 yande.re"
     options: ["true", "false"]
+    default_value: "false"
   EX_PANTY:
     name: 过滤 · 胖次（panties）
     description: "站点：两站都有"
     options: ["true", "false"]
+    default_value: "false"
   EX_UNDERWEAR:
     name: 过滤 · 内衣（underwear / bra）
     description: "站点：两站都有"
     options: ["true", "false"]
+    default_value: "false"
   EX_SEETHROUGH:
     name: 过滤 · 透视（see_through）
     description: "站点：两站都有"
     options: ["true", "false"]
+    default_value: "false"
   EX_NUDE:
     name: 过滤 · 裸体（nude / topless）
     description: "站点：两站都有；`completely_nude` 仅 yande.re"
     options: ["true", "false"]
+    default_value: "false"
   EX_CAMEL:
     name: 过滤 · 骆驼趾（cameltoe / spread_legs）
     description: "站点：两站都有；`spread_legs` 仅 Konachan"
     options: ["true", "false"]
+    default_value: "false"
   EX_LOLI:
     name: 过滤 · 萝莉正太（loli / shota）
     description: "站点：两站都有；`shota` 主要在 yande.re。默认关，打开素材会少一截"
     options: ["true", "false"]
+    default_value: "false"
   EX_BONDAGE:
     name: 过滤 · 捆绑（bondage）
     description: "站点：两站都有"
     options: ["true", "false"]
+    default_value: "false"
   EX_PANEL:
     name: 过滤 · 多格（4koma）
     description: "只排 4 格漫画 ｜ 站点：仅 yande.re"
     options: ["true", "false"]
+    default_value: "false"
   EX_WHITE:
     name: 过滤 · 白色（white）
     description: "只匹配整词 white，不会误伤 white_hair ｜ 站点：仅 Konachan"
     options: ["true", "false"]
+    default_value: "false"
   EXCLUDE_EXTRA:
     name: 过滤 · 自定义标签
     description: "多个用逗号分隔（guro, vore）；标签内部的空格会自动转下划线（erect nipples → erect_nipples）"
@@ -131,15 +154,18 @@ env_schema:
     name: 显示 · 防重复窗口
     description: "所有尺寸共用一份历史，显示过的作品在这 N 张内不会再出现"
     options: ["50", "100", "200", "500"]
+    default_value: "100"
   SHOW_INFO:
     name: 显示 · 分辨率
     description: "左下角显示 分辨率 + 收藏数"
     options: ["true", "false"]
+    default_value: "true"
   DEBUG:
     name: 显示 · 调试角标
     description: "一行状态：版本/图源/比例/画幅/分级/体积/排序/时段/异常标记"
     options: ["true", "false"]
 
+    default_value: "false"
 scriptings:
   - generic:
       name: YandereWidget
