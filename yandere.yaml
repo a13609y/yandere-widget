@@ -157,9 +157,9 @@ env_schema:
 
   EX_WHITE:
     name: 过滤 · 白色（white）
-    description: "只匹配整词 white，不会误伤 white_hair ｜ 站点：仅 Konachan"
+    description: "只匹配整词 white，不会误伤 white_hair ｜ 站点：仅 Konachan｜默认开：白底/纯白画面在桌面组件上很脏"
     options: ["true", "false"]
-    default_value: "false"
+    default_value: "true"
 
   EXCLUDE_EXTRA:
     name: 过滤 · 自定义标签
