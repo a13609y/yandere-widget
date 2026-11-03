@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v5.1';
+const SCRIPT_VER = 'v5.2';
 
 // konachan 有两个域名：.net 是纯净镜像（只有 s），.com 才含 q/e。
 // 勾了擦边/工口就自动换 .com，只勾全年龄就用 .net。
@@ -558,18 +558,29 @@ function scoreLadder(minScore) {
 }
 
 // 依次尝试的档位序列（严格 → 去标签 → 粗分档 → 评分阶梯 → 时段阶梯 → 全放开）
+// booru 的「方图」大多是 4:3（1.33），理想比例 1.0 ±15%（0.85~1.15）几乎筛不到东西。
+// 容忍低于 MIN_TOL_SQUARE 时直接按粗分档来，别再白跑一次注定空的查询。
+const MIN_TOL_SQUARE = 35;
+
+function ratioHopeless(cfg) {
+  return cfg.customOn && cfg.ratioLabel === '方图' && cfg.tolPct < MIN_TOL_SQUARE;
+}
+
 function buildAttempts(cfg, plan) {
   const strict = strictMeta(cfg);
   const withTags = cfg.tags.length > 0;
   const list = [];
+  const hopeless = ratioHopeless(cfg);
 
   // 上次刷新成功的档位先试一次（避免每次刷新都重走整条链）
   if (plan && !sameMeta(plan, strict)) {
     list.push({ cfg: variantCfg(cfg, plan), useTags: !plan.tf, meta: plan });
   }
-  list.push({ cfg, useTags: true, meta: strict });
+  // 方图 + 过窄容忍：直接按粗分档（并把角标标成 ⚠画幅），省掉一次注定为空的查询
+  if (!hopeless) list.push({ cfg, useTags: true, meta: strict });
+  else list.push({ cfg: variantCfg(cfg, Object.assign({}, strict, { rl: 1 })), useTags: true, meta: Object.assign({}, strict, { rl: 1 }) });
   if (cfg.tags.length) list.push({ cfg, useTags: false, meta: Object.assign({}, strict, { tf: 1 }) });
-  if (cfg.customOn) list.push({ cfg: variantCfg(cfg, Object.assign({}, strict, { rl: 1 })), useTags: withTags, meta: Object.assign({}, strict, { rl: 1 }) });
+  if (cfg.customOn && !hopeless) list.push({ cfg: variantCfg(cfg, Object.assign({}, strict, { rl: 1 })), useTags: withTags, meta: Object.assign({}, strict, { rl: 1 }) });
 
   // 评分阶梯：保住时段
   scoreLadder(cfg.minScore).slice(1).forEach(sc => {
