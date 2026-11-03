@@ -166,6 +166,14 @@ yande.re 的 `rating:s` **不保证内容真的全年龄**：实测 100 条 `rat
 | 萝莉/正太 | `loli` `shota` |
 | 捆绑 | `bondage` |
 
+## yande.re 加载不出图的原因（v6.7 已修）
+
+v6.6 及以前，下载图片时拼的 Referer 是 `https://yande/` —— 因为代码里把内部的站点 key（`yande`）当域名用了，正确应该是 `https://yande.re/`。
+
+后果：yande 的图床对 Referer 敏感，直接 307 跳回 `post/show?md5=...`，返回的是网页不是图 → 组件显示「加载失败 / 图床限流了」。Konachan 不校验 Referer，所以只有 yande 坏。
+
+顺带修了 URL 处理：以前用 `encodeURI(decodeURI(url))`，会把文件名里的 `%28 %29`（括号）解成字面量，图床同样认不出、照样 307。现在只补裸空格和非 ASCII 字符。
+
 ## 已知限制
 
 - **单张 > 1.2MB 会被跳过**（iOS 桌面小组件渲染不出来）。sample 图基本都在 200~500KB，很少触发。
