@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v5.8';
+const SCRIPT_VER = 'v5.9';
 
 // konachan 有两个域名：.net 是纯净镜像（只有 s），.com 才含 q/e。
 // 勾了擦边/工口就自动换 .com，只勾全年龄就用 .net。
@@ -388,7 +388,7 @@ function readConfig(env, family) {
 
   // 时段：yande.re 支持 date:>YYYY-MM-DD（也支持 date:A..B），不支持 age:
   // 「最新」本身就是时间倒序，时段没意义 → 忽略
-  const periodLabel = s('PERIOD', '六年内');
+  const periodLabel = s('PERIOD', '三年内');
   const periodDays = {
     '一天内': 1, '一周内': 7, '一个月内': 30, '三个月内': 90,
     '半年内': 180, '一年内': 365, '两年内': 730, '三年内': 1095, '六年内': 2190
@@ -448,7 +448,7 @@ function readConfig(env, family) {
     minScore: Math.min(200, int('MIN_SCORE', 200, 0, 200)),
     cooldownMin: int('COOLDOWN', 30, 0, 24 * 60),
     maxHistory: int('NO_REPEAT', 100, 1, 2000),
-    showInfo: bool('SHOW_INFO', true),
+    showInfo: bool('SHOW_INFO', false),   // 默认不显示，想看再手动打开
     debug: bool('DEBUG', false),
     timeoutMs: 20000
   };
