@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v5.9';
+const SCRIPT_VER = 'v6.0';
 
 // konachan 有两个域名：.net 是纯净镜像（只有 s），.com 才含 q/e。
 // 勾了擦边/工口就自动换 .com，只勾全年龄就用 .net。
@@ -444,8 +444,7 @@ function readConfig(env, family) {
     // 防止「标签无结果→退回随机」时把没勾的等级漏进来
     ratingAllowed: allowed,
     minW: int('MIN_W', 1024, 200, 4000),
-    // 上限锁 200：再高候选集比池子还小，只会来回轮换（见 README 实测）
-    minScore: Math.min(200, int('MIN_SCORE', 200, 0, 200)),
+    minScore: 0,        // v6.0 起不提供最低评分选项：实测高分档候选集太小，只会原地轮换
     cooldownMin: int('COOLDOWN', 30, 0, 24 * 60),
     maxHistory: int('NO_REPEAT', 100, 1, 2000),
     showInfo: bool('SHOW_INFO', false),   // 默认不显示，想看再手动打开
