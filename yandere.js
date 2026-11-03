@@ -443,7 +443,8 @@ function readConfig(env, family) {
     // 防止「标签无结果→退回随机」时把没勾的等级漏进来
     ratingAllowed: allowed,
     minW: int('MIN_W', 1024, 200, 4000),
-    minScore: int('MIN_SCORE', 0, 0, 100000),
+    // 上限锁 200：再高候选集比池子还小，只会来回轮换（见 README 实测）
+    minScore: Math.min(200, int('MIN_SCORE', 0, 0, 200)),
     cooldownMin: int('COOLDOWN', 30, 0, 24 * 60),
     maxHistory: int('NO_REPEAT', 100, 1, 2000),
     showInfo: bool('SHOW_INFO', true),
