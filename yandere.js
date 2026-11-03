@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v6.0';
+const SCRIPT_VER = 'v6.3';
 
 // konachan 有两个域名：.net 是纯净镜像（只有 s），.com 才含 q/e。
 // 勾了擦边/工口就自动换 .com，只勾全年龄就用 .net。
@@ -149,7 +149,7 @@ const EXCLUDE_PRESETS = [
   { key: 'EX_CAMEL', tags: ['cameltoe', 'spread_legs'] },
   { key: 'EX_BONDAGE', tags: ['bondage'] },
   // 「白色」只按整词匹配：konachan 上 white_hair 有上万条，按段匹配会把白毛角色全灭
-  { key: 'EX_WHITE', tags: ['white'], exact: true },
+  { key: 'EX_WHITE', tags: ['white'], exact: true, on: true },   // 默认开：白底/纯白画面在桌面组件上很难看
   // 多格：只有 4koma 在 yande.re 有效（其余 comic/2koma/multiple_views/collage 两站都是 0）
   { key: 'EX_PANEL', tags: ['4koma'] }
   // 已删除（两站都搜不到，纯空转）：
@@ -400,7 +400,7 @@ function readConfig(env, family) {
     const seg = [];   // 按 `_` 分段匹配（nipples 命中 erect_nipples）
     const exact = []; // 整词匹配（white 不误伤 white_hair）
     EXCLUDE_PRESETS.forEach(p => {
-      if (!bool(p.key, false)) return;
+      if (!bool(p.key, !!p.on)) return;
       (p.exact ? exact : seg).push(...p.tags);
     });
     s('EXCLUDE_EXTRA', '')
