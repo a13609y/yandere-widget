@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v4.6';
+const SCRIPT_VER = 'v4.7';
 
 // konachan 有两个域名：.net 是纯净镜像（只有 s），.com 才含 q/e。
 // 勾了擦边/工口就自动换 .com，只勾全年龄就用 .net。
@@ -52,7 +52,8 @@ const K = {
   pool: 'yd_pool_',          // + ratioKey
   history: 'yd_history',
   lastShow: 'yd_lastshow_',  // + family
-  debug: 'yd_debug'
+  debug: 'yd_debug',
+  bad: 'yd_bad'              // 下不下来的图（id → 时间戳），7 天内不再试
 };
 
 // yande.re / Konachan 的标签全是英文（罗马字），中文直接查是 0 条。
@@ -158,6 +159,8 @@ const EXCLUDE_PRESETS = [
 
 const MAX_POOL = 80;
 const HARD_LIMIT_KB = 1200;   // 单张超过这个体积就跳过（iOS 桌面画不出来）
+// 图床（files.yande.re 等）偶尔会返回风控网页而不是图片，用浏览器 UA 过掉大部分
+const IMG_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1';
 
 export default async function (ctx) {
   const family = ctx.widgetFamily || 'systemSmall';
@@ -199,34 +202,43 @@ export default async function (ctx) {
   if (!Array.isArray(history)) history = [];
   const historySet = new Set(history.map(String));
 
-  let candidate = pickFromPool(pool, historySet, cfg);
+  const badSet = new Set(Object.keys(readBad(ctx)));
+  let candidate = pickFromPool(pool, historySet, cfg, badSet);
+  let spare = [];                    // 放宽档位抓到的图：只用这一次，不进池子
+  const seenItems = [];              // 本次搜到的全部图，用来在「没新图」时轮换
   let searches = 0;
   let lastError = '';
   let errorStatus = null;
-  let tagFallback = false;
-  let periodRelaxed = false;
-  let scoreRelaxed = false;
-  let ratioRelaxed = false;
 
-  // 素材不够时继续翻页，最多 4 次：
+  // 池子里只放「严格符合设置」的图；池子空了才去查，最多 3 轮
   //   随机 → 每次换一个随机页（每页都是新的一批）
   //   热度/最新 → 按 1..10 页顺序往后翻（排序稳定，翻页才有意义）
-  while (!candidate && searches < 4) {
+  while (!candidate && searches < 3) {
     try {
       const page = cfg.sort === 'random'
         ? 1 + Math.floor(Math.random() * 3)
         : Math.max(1, pool.page || 1);
-      const res = await search(ctx, cfg, page);
+      const res = await search(ctx, cfg, page, pool.plan, badSet);
       if (cfg.sort !== 'random') pool.page = page >= 10 ? 1 : page + 1;
       searches++;
+
+      res.items.forEach(it => seenItems.push(it));
+      const strictItems = res.items.filter(it => isStrictMeta(it.meta, cfg));
+      const relaxedItems = res.items.filter(it => !isStrictMeta(it.meta, cfg));
       const have = new Set(pool.items.map(it => String(it.id)));
-      const added = res.items.filter(it => !have.has(String(it.id)));
+      const added = strictItems.filter(it => !have.has(String(it.id)) && !badSet.has(String(it.id)));
       pool.items = pool.items.concat(added).slice(-MAX_POOL);
       pool.sig = sig;
-      writeJSON(ctx, poolKey, pool);
-      candidate = pickFromPool(pool, historySet, cfg);
-      if (candidate) { tagFallback = res.tagFallback; periodRelaxed = res.periodRelaxed; scoreRelaxed = res.scoreRelaxed; ratioRelaxed = res.ratioRelaxed; break; }
-      if (res.empty || added.length === 0) break;
+      pool.plan = res.plan || null;      // 记住这次生效的档位，下次直接一次请求
+
+      candidate = pickFromPool(pool, historySet, cfg, badSet);
+      if (!candidate && relaxedItems.length) {
+        spare = relaxedItems.slice();
+        candidate = pickSpare(spare, historySet, badSet);
+      }
+      writeJSON(ctx, poolKey, pool);     // 抽走的那张必须落盘，否则下次还从同一批里挑
+      if (candidate) break;
+      if (!res.items.length) break;
     } catch (e) {
       lastError = (e && e.message) || '搜索失败';
       errorStatus = e && e.status ? e.status : null;
@@ -234,14 +246,24 @@ export default async function (ctx) {
     }
   }
 
+  // 可用的图全被防重复窗口挡掉了（素材本来就少）→ 轮换一张别的，别原样重放上一张
+  if (!candidate && seenItems.length) {
+    const hold = cached && cached.id ? String(cached.id) : '';
+    const alt = seenItems.filter(it => it && it.sample && String(it.id) !== hold && !badSet.has(String(it.id)));
+    if (alt.length) candidate = alt[Math.floor(Math.random() * alt.length)];
+  }
+
   if (!candidate) {
-    if (cached && cached.dataUri) return buildWidget(cached, family, cfg, new Date(now + 10 * 60000).toISOString());
+    if (cached && cached.dataUri) {
+      return buildWidget(Object.assign({}, cached, { searches }), family, cfg, new Date(now + 10 * 60000).toISOString());
+    }
     return buildError(lastError || emptyHint(cfg), cfg, new Date(now + 15 * 60000).toISOString());
   }
 
   // ── 下载（sample 图：1500px 长边、200~500KB）─────────────────
   let img = null;
   let tries = 0;
+  let transientHits = 0;
   const referer = 'https://' + (candidate.site || 'yande.re') + '/';
   while (!img && candidate && tries < 3) {
     tries++;
@@ -250,18 +272,26 @@ export default async function (ctx) {
     } catch (e) {
       lastError = (e && e.message) || '图片下载失败';
       if (e && (e.status === 429 || e.status === 403)) { errorStatus = e.status; break; }
-      historySet.add(String(candidate.id));       // 这张下不下来，跳过换下一张
-      candidate = pickFromPool(pool, historySet, cfg);
-      if (candidate) writeJSON(ctx, poolKey, pool);
+      if (e && e.transient) {
+        // 限流是暂时的：只在本轮里跳过它，不写进坏图列表
+        badSet.add(String(candidate.id));
+        if (++transientHits >= 2) break;          // 连续两次就别再试了，直接回退旧图
+      } else {
+        badSet.add(String(candidate.id));
+        markBad(ctx, candidate.id);               // 这张真下不来，7 天内不再试
+      }
+      candidate = pickFromPool(pool, historySet, cfg, badSet) || pickSpare(spare, historySet, badSet);
+      writeJSON(ctx, poolKey, pool);
     }
   }
 
   if (!img) {
     const wait = errorStatus === 429 ? 45 : (errorStatus === 403 ? 20 : 10);
-    if (cached && cached.dataUri) return buildWidget(cached, family, cfg, new Date(now + wait * 60000).toISOString());
+    if (cached && cached.dataUri) return buildWidget(Object.assign({}, cached, { searches }), family, cfg, new Date(now + wait * 60000).toISOString());
     return buildError(lastError || '图片下载失败', cfg, new Date(now + Math.min(wait, 15) * 60000).toISOString());
   }
 
+  const meta = candidate.meta || { sc: 0, pd: 0, rl: 0, tf: 0 };
   const entry = {
     id: candidate.id,
     ar: candidate.sampleW && candidate.sampleH ? +(candidate.sampleW / candidate.sampleH).toFixed(2) : null,
@@ -274,19 +304,20 @@ export default async function (ctx) {
     sizeKb: Math.round(img.bytes / 1024),
     tags: (candidate.tags || '').split(' ').slice(0, 6).join(' '),
     queryTags: cfg.tagsJoined,
-    tagFallback,
-    periodRelaxed,
-    // 以「这张图自己的分数」判断是否降档了，比记「搜索时放宽过」准
+    // 角标按「这张图实际是按什么档位抓来的」算，存进池子也带着，换刷新不会丢
+    tagFallback: !!meta.tf,
+    periodRelaxed: (meta.pd || 0) !== strictMeta(cfg).pd,
     scoreRelaxed: cfg.minScore > 0 && (candidate.score || 0) < cfg.minScore,
     scoreCfg: cfg.minScore,
-    ratioRelaxed,
+    ratioRelaxed: !!meta.rl,
     searches,
     uiSig: uiSignature(cfg),
     sig,
     at: now
   };
 
-  writeJSON(ctx, K.cache + family, entry);
+  const cacheOk = writeJSON(ctx, K.cache + family, entry);
+  if (!cacheOk) entry.cacheFailed = true;
   const hi = history.findIndex(x => String(x) === String(candidate.id));
   if (hi >= 0) history.splice(hi, 1);
   history.push(candidate.id);
@@ -295,8 +326,10 @@ export default async function (ctx) {
   ctx.storage.set(K.lastShow + family, String(now));
   writeJSON(ctx, K.debug, {
     at: now, id: candidate.id, site: candidate.site, ar: entry.ar, dim: entry.dim,
-    sizeKb: entry.sizeKb, rating: candidate.rating, tags: cfg.tagsJoined, tagFallback, searches
+    sizeKb: entry.sizeKb, rating: candidate.rating, tags: cfg.tagsJoined,
+    meta, searches, cacheOk
   });
+  prunePools(ctx, cfg.ratioLabel);
 
   return buildWidget(entry, family, cfg, nextIso(cfg.cooldownMin > 0 ? cfg.cooldownMin : 15));
 }
@@ -476,6 +509,42 @@ function buildTagString(cfg, useTags) {
   return parts.join(' ');
 }
 
+function effPeriod(cfg) {
+  return cfg.dateFilter ? (cfg.periodDays || 0) : 0;
+}
+
+// 严格档位 = 用户设置的原始条件
+function strictMeta(cfg) {
+  return { sc: cfg.minScore || 0, pd: effPeriod(cfg), rl: 0, tf: 0 };
+}
+
+function sameMeta(a, b) {
+  if (!a || !b) return false;
+  return (a.sc || 0) === (b.sc || 0) && (a.pd || 0) === (b.pd || 0) && (a.rl ? 1 : 0) === (b.rl ? 1 : 0) && (a.tf ? 1 : 0) === (b.tf ? 1 : 0);
+}
+
+// 这批图是否符合「严格档位」。老池子里的项没有 meta，一律按严格处理（sig 变了会清池）
+function isStrictMeta(meta, cfg) {
+  if (!meta) return true;
+  return sameMeta(meta, strictMeta(cfg));
+}
+
+// 把档位还原成一次查询配置
+function variantCfg(cfg, meta) {
+  const c = Object.assign({}, cfg, { minScore: Math.max(0, meta.sc || 0) });
+  const pd = meta.pd || 0;
+  if (pd !== effPeriod(cfg)) {
+    c.periodDays = pd;
+    c.dateFilter = pd > 0 ? 'date:>' + ymdDaysAgo(pd) : '';
+  }
+  if (meta.rl) {
+    c.customOn = false;
+    c.bandLo = BAND_LOOSE[cfg.ratioLabel] ? BAND_LOOSE[cfg.ratioLabel][0] : 0;
+    c.bandHi = BAND_LOOSE[cfg.ratioLabel] ? BAND_LOOSE[cfg.ratioLabel][1] : 99;
+  }
+  return c;
+}
+
 // 评分阶梯：卡太死时逐级降（200 → 150 → 100 → 50），而不是一步砍到 0
 function scoreLadder(minScore) {
   if (!(minScore > 0)) return [];
@@ -487,94 +556,102 @@ function scoreLadder(minScore) {
   return out;
 }
 
-async function search(ctx, cfg, page) {
+// 依次尝试的档位序列（严格 → 去标签 → 粗分档 → 评分阶梯 → 时段阶梯 → 全放开）
+function buildAttempts(cfg, plan) {
+  const strict = strictMeta(cfg);
+  const withTags = cfg.tags.length > 0;
+  const list = [];
+
+  // 上次刷新成功的档位先试一次（避免每次刷新都重走整条链）
+  if (plan && !sameMeta(plan, strict)) {
+    list.push({ cfg: variantCfg(cfg, plan), useTags: !plan.tf, meta: plan });
+  }
+  list.push({ cfg, useTags: true, meta: strict });
+  if (cfg.tags.length) list.push({ cfg, useTags: false, meta: Object.assign({}, strict, { tf: 1 }) });
+  if (cfg.customOn) list.push({ cfg: variantCfg(cfg, Object.assign({}, strict, { rl: 1 })), useTags: withTags, meta: Object.assign({}, strict, { rl: 1 }) });
+
+  // 评分阶梯：保住时段
+  scoreLadder(cfg.minScore).slice(1).forEach(sc => {
+    list.push({ cfg: Object.assign({}, cfg, { minScore: sc }), useTags: withTags, meta: Object.assign({}, strict, { sc, tf: withTags ? 0 : 0 }) });
+  });
+
+  // 时段阶梯：保住评分
+  if (cfg.dateFilter) {
+    let days = PERIOD_LADDER.filter(d => d > (cfg.periodDays || 0));
+    // yande.re 的 order:random 叠加 date 几乎必空（实测 0~3 条），中间档位纯浪费请求，直接跳到不限
+    if (cfg.site === 'yande' && cfg.sort === 'random') days = [];
+    days.slice(0, 3).forEach(d => {
+      list.push({
+        cfg: Object.assign({}, cfg, { dateFilter: 'date:>' + ymdDaysAgo(d), periodDays: d }),
+        useTags: withTags, meta: Object.assign({}, strict, { pd: d })
+      });
+    });
+    list.push({
+      cfg: Object.assign({}, cfg, { dateFilter: '', periodDays: 0 }),
+      useTags: withTags, meta: Object.assign({}, strict, { pd: 0 })
+    });
+  }
+
+  // 最后兜底：评分也不要了
+  if (cfg.minScore > 0) {
+    list.push({
+      cfg: Object.assign({}, cfg, { minScore: 0, dateFilter: '' }),
+      useTags: withTags, meta: { sc: 0, pd: 0, rl: 0, tf: 0 }
+    });
+  }
+  return list;
+}
+
+async function search(ctx, cfg, page, plan, skipSet) {
   const hosts = hostsFor(cfg);
   const pg = Math.max(1, page | 0);
+  let budget = 16;                // 单次搜索请求上限，防止放宽链把小组件拖超时
+  let lastErr = null;
+  let rateLimited = false;
+  const okHosts = [];
 
-  // 一次尝试：按 host 顺序取，任一 host 有结果就返回；顺带记下哪个 host 是通的
-  const run = async (c, useTags, hostList) => {
-    let lastErr = null;
-    const okHosts = [];
+  const call = async (c, useTags, hostList) => {
+    // tf = 这次查询是否把用户标签丢了（没有标签时不算丢）
+    const tfDropped = (cfg.tags.length > 0 && !useTags) ? 1 : 0;
+    const sent = { sc: c.minScore || 0, pd: c.dateFilter ? (c.periodDays || 0) : 0, rl: c.customOn ? 0 : (cfg.customOn ? 1 : 0), tf: tfDropped };
     for (let i = 0; i < hostList.length; i++) {
+      if (budget <= 0) return { items: [] };
+      budget--;
       const host = hostList[i];
       const url = HOSTS[host] + '?tags=' + encodeURIComponent(buildTagString(c, useTags)) + '&limit=100&page=' + pg;
       try {
-        const items = normalize(await fetchJson(ctx, url, c), host).filter(it => passesFilter(it, c));
+        const items = normalize(await fetchJson(ctx, url, c), host, sent)
+          .filter(it => passesFilter(it, c) && !(skipSet && skipSet.has(String(it.id))));   // 下不下来的图直接当不存在，好让放宽链继续往下走
         okHosts.push(host);
-        if (items.length) return { items, host, okHosts, lastErr };
+        if (items.length) return { items, host, meta: sent };
       } catch (e) {
-        lastErr = e;                 // 某个源挂了 → 试下一个源
+        lastErr = e;              // 某个源挂了 → 试下一个
+        if (e && e.status === 429) { rateLimited = true; return { items: [] }; }   // 限流了就别再连环请求
       }
     }
-    return { items: [], host: okHosts[0] || null, okHosts, lastErr };
+    return { items: [] };
   };
 
-  const ok = (r, extra) => Object.assign({
-    items: r.items, empty: false,
-    tagFallback: false, periodRelaxed: false, ratioRelaxed: false, scoreRelaxed: false
-  }, extra || {});
+  const attempts = buildAttempts(cfg, plan);
+  const reachable = () => (okHosts.length ? Array.from(new Set(okHosts)) : hosts);
 
-  // ⓪ 原样
-  let r = await run(cfg, true, hosts);
-  if (r.items.length) return ok(r);
-
-  let lastErr = r.lastErr;
-  const primary = r.okHosts.length ? r.okHosts : hosts.slice(0, 1);   // 后面的放宽只在能连通的源上试
-  const useTags = cfg.tags.length > 0;
-
-  // ① 标签组合太窄 → 去掉用户标签
-  if (cfg.tags.length) {
-    r = await run(cfg, false, hosts);
-    if (r.items.length) return ok(r, { tagFallback: true });
-    lastErr = r.lastErr || lastErr;
-  }
-
-  // ② 自定义容忍太窄（方图 ±15%，而 Konachan 的「方图」其实是 4:3）→ 退回粗分档
-  if (cfg.customOn) {
-    const loose = Object.assign({}, cfg, {
-      customOn: false,
-      bandLo: BAND_LOOSE[cfg.ratioLabel] ? BAND_LOOSE[cfg.ratioLabel][0] : 0,
-      bandHi: BAND_LOOSE[cfg.ratioLabel] ? BAND_LOOSE[cfg.ratioLabel][1] : 99
-    });
-    r = await run(loose, true, hosts);
-    if (r.items.length) return ok(r, { ratioRelaxed: true });
-    lastErr = r.lastErr || lastErr;
-  }
-
-  // ③ 最低评分卡太死 → 逐级降档（保住时段）
-  const ladder = scoreLadder(cfg.minScore);
-  for (let i = 1; i < ladder.length; i++) {
-    const c = Object.assign({}, cfg, { minScore: ladder[i] });
-    r = await run(c, useTags, primary);
-    if (r.items.length) return ok(r, { tagFallback: useTags, scoreRelaxed: true });
-    lastErr = r.lastErr || lastErr;
-  }
-
-  // ④ 时段太窄（例如「一年内 + 200 分」，实测一年内的图最高只有 190）→ 保住评分，逐级放宽时段
-  if (cfg.dateFilter) {
-    const steps = PERIOD_LADDER.filter(d => d > (cfg.periodDays || 0)).slice(0, 3);
-    for (let i = 0; i < steps.length; i++) {
-      const c = Object.assign({}, cfg, { dateFilter: 'date:>' + ymdDaysAgo(steps[i]), periodDays: steps[i] });
-      r = await run(c, useTags, primary);
-      if (r.items.length) return ok(r, { tagFallback: useTags, periodRelaxed: true });
-      lastErr = r.lastErr || lastErr;
+  for (let i = 0; i < attempts.length; i++) {
+    if (budget <= 0 || rateLimited) break;
+    const a = attempts[i];
+    // 前两次（上次档位 / 严格）两个源都试；之后只在连通的那个源上放宽
+    const hostList = i <= 1 ? hosts : reachable();
+    const r = await call(a.cfg, a.useTags, hostList);
+    if (r.items.length) {
+      return {
+        items: r.items, host: r.host, ok: true,
+        meta: r.meta,
+        plan: sameMeta(r.meta, strictMeta(cfg)) ? null : r.meta
+      };
     }
-    const c = Object.assign({}, cfg, { dateFilter: '', periodDays: 0 });
-    r = await run(c, useTags, primary);
-    if (r.items.length) return ok(r, { tagFallback: useTags, periodRelaxed: true });
-    lastErr = r.lastErr || lastErr;
   }
-
-  // ⑤ 最后兜底：评分也不要了
-  if (cfg.minScore > 0) {
-    const c = Object.assign({}, cfg, { minScore: 0, dateFilter: '' });
-    r = await run(c, useTags, primary);
-    if (r.items.length) return ok(r, { tagFallback: useTags, periodRelaxed: cfg.dateFilter ? true : false, scoreRelaxed: true });
-    lastErr = r.lastErr || lastErr;
-  }
-
-  if (lastErr) throw lastErr;
-  return { items: [], empty: true, tagFallback: false, periodRelaxed: false, ratioRelaxed: false, scoreRelaxed: false };
+  // 只要有源正常回过（哪怕 0 条），就不算失败；偶发超时不该让整个组件显示「加载失败」
+  if (lastErr && (okHosts.length === 0 || rateLimited)) throw lastErr;
+  return { items: [], ok: false, meta: null, plan: null };
 }
 
 async function fetchJson(ctx, url, cfg) {
@@ -598,7 +675,8 @@ async function fetchJson(ctx, url, cfg) {
   return body;
 }
 
-function normalize(list, host) {
+function normalize(list, host, meta) {
+  const m = meta || { sc: 0, pd: 0, rl: 0, tf: 0 };
   return list.map(p => {
     const sample = p.sample_url || '';
     const sampleW = Number(p.sample_width) || Number(p.width) || 0;
@@ -617,7 +695,8 @@ function normalize(list, host) {
       height: Number(p.height) || 0,
       rating: p.rating || '',
       score: Number(p.score) || 0,
-      tags: p.tags || ''
+      tags: p.tags || '',
+      meta: m            // 这批图是按哪个档位抓来的（sc=评分下限 / pd=时段天数 / rl=画幅退回粗分档 / tf=丢了标签）
     };
   }).filter(it => it.id && it.sample);
 }
@@ -676,12 +755,26 @@ function passesFilter(it, cfg) {
 
 /* ============================ 选图 ============================ */
 
-function pickFromPool(pool, historySet, cfg) {
+function pickFromPool(pool, historySet, cfg, badSet) {
   if (!pool || !Array.isArray(pool.items) || pool.items.length === 0) return null;
-  const fresh = pool.items.filter(it => it && it.sample && !historySet.has(String(it.id)));
+  const fresh = pool.items.filter(it => it && it.sample
+    && isStrictMeta(it.meta, cfg)
+    && !historySet.has(String(it.id))
+    && !(badSet && badSet.has(String(it.id))));
   if (fresh.length === 0) return null;
   const picked = fresh[Math.floor(Math.random() * fresh.length)];
   pool.items = pool.items.filter(it => it !== picked);
+  return picked;
+}
+
+// 放宽档位抓来的图只用在本次刷新，不进池子（否则会一直盖住严格档位）
+function pickSpare(spare, historySet, badSet) {
+  const fresh = (spare || []).filter(it => it && it.sample
+    && !historySet.has(String(it.id))
+    && !(badSet && badSet.has(String(it.id))));
+  if (!fresh.length) return null;
+  const picked = fresh[Math.floor(Math.random() * fresh.length)];
+  for (let i = spare.length - 1; i >= 0; i--) { if (spare[i] === picked) spare.splice(i, 1); }
   return picked;
 }
 
@@ -692,7 +785,7 @@ async function download(ctx, url, cfg, referer) {
   let resp;
   try {
     resp = await ctx.http.get(safeUrl, {
-      headers: { 'Referer': referer || 'https://yande.re/', 'User-Agent': 'Egern/YandereWidget ' + SCRIPT_VER },
+      headers: { 'Referer': referer || 'https://yande.re/', 'User-Agent': IMG_UA },
       timeout: cfg.timeoutMs
     });
   } catch (e) {
@@ -706,6 +799,12 @@ async function download(ctx, url, cfg, referer) {
 
   const buf = await resp.arrayBuffer();
   const bytes = new Uint8Array(buf);
+  if (bytes[0] === 0x3c) {          // '<' → 被重定向到图片页/风控页，多半是限流，不是这张图坏了
+    const e = new Error('图床限流了，稍后重试');
+    e.status = 0;
+    e.transient = true;
+    throw e;
+  }
   const looksImage = (bytes[0] === 0xff && bytes[1] === 0xd8)
     || (bytes[0] === 0x89 && bytes[1] === 0x50)
     || (bytes[0] === 0x47 && bytes[1] === 0x49)
@@ -770,6 +869,7 @@ function buildWidget(entry, family, cfg, refreshAfter) {
       text: `${SCRIPT_VER} ${entry.site} ${entry.ar || '-'} ${cfg.ratioLabel} ${entry.rating || '-'}`
         + `${entry.sizeKb ? ' ' + entry.sizeKb + 'KB' : ''}`
         + ` ${cfg.sortLabel}${cfg.dateFilter ? '/' + cfg.periodLabel : ''}`
+        + (entry.cacheFailed ? ' 缓存写入失败' : '')
         + `${entry.tagFallback ? ' ⚠标签' : ''}${entry.periodRelaxed ? ' ⚠时段' : ''}${entry.scoreRelaxed ? ' ⚠评分' + entry.score + '<' + entry.scoreCfg : ''}${entry.ratioRelaxed ? ' ⚠画幅' : ''}`
         + `${entry.queryTags ? ' 「' + entry.queryTags + '」' : ''} ${entry.searches}搜`,
       font: { size: 'caption2' },
@@ -812,7 +912,10 @@ function buildWidget(entry, family, cfg, refreshAfter) {
 }
 
 function buildAccessory(ctx, family, cfg) {
-  const cached = readJSON(ctx, K.cache + 'systemSmall') || readJSON(ctx, K.cache + 'systemMedium');
+  // 只加了锁屏组件时，小/中号桌面组件可能是空的 → 四个尺寸的缓存挨个找一遍
+  const cached = Object.keys(RATIO_BY_FAMILY)
+    .map(f => readJSON(ctx, K.cache + f))
+    .find(c => c && c.dataUri) || null;
   const has = cached && cached.dataUri;
 
   if (family === 'accessoryCircular') {
@@ -871,5 +974,37 @@ function readJSON(ctx, key) {
 function writeJSON(ctx, key, value) {
   try {
     ctx.storage.set(key, JSON.stringify(value));
-  } catch (e) {}
+    return true;
+  } catch (e) {
+    return false;      // 比如单张图 base64 太大写不进去，要能看出来
+  }
+}
+
+// 下不下来的图（重定向到 HTML、404 之类）：记 7 天，别每次刷新都拿它试 3 遍
+function readBad(ctx) {
+  const o = readJSON(ctx, K.bad) || {};
+  const now = Date.now();
+  const out = {};
+  Object.keys(o).forEach(k => { if (now - (Number(o[k]) || 0) < 7 * 86400000) out[k] = o[k]; });
+  return out;
+}
+
+function markBad(ctx, id) {
+  const o = readBad(ctx);
+  o[String(id)] = Date.now();
+  writeJSON(ctx, K.bad, o);
+}
+
+// 画幅改了以后，旧画幅的池子没人用，顺手清掉（只清我们确定存在的那几个 key）
+function prunePools(ctx, keepLabel) {
+  const keep = { 不限: 1 };
+  if (keepLabel) keep[keepLabel] = 1;
+  Object.keys(RATIO_BY_FAMILY).forEach(f => {
+    const v = ctx.env && ctx.env[RATIO_BY_FAMILY[f]];
+    keep[(v && String(v).trim()) || DEFAULT_RATIO[f] || ''] = 1;
+  });
+  ['方图', '横图', '竖图'].forEach(l => {
+    if (keep[l]) return;
+    try { if (ctx.storage.get(K.pool + l) !== undefined) ctx.storage.set(K.pool + l, ''); } catch (e) {}
+  });
 }
