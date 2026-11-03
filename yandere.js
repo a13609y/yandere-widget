@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v8.0';
+const SCRIPT_VER = 'v8.1';
 
 // konachan 有两个域名：.net 是纯净镜像（只有 s），.com 才含 q/e。
 // 勾了擦边/工口就自动换 .com，只勾全年龄就用 .net。
@@ -174,6 +174,8 @@ export default async function (ctx) {
   const stale = !cached || cached.sig !== sig;
 
   if (cached && cached.dataUri && remaining > 0 && !stale) {
+    // 这次渲染本来只返回缓存（5ms），顺手把袋子补好，让真正换图那次快一点
+    if (cfg.cooldownMin > 0) await prefetchBag(ctx, cfg, sig);
     const uiSig = uiSignature(cfg);
     if (cached.uiSig !== uiSig) {
       cached.uiSig = uiSig;
@@ -866,6 +868,47 @@ function monthRange(key) {
   const y = Number(parts[0]), m = Number(parts[1]);
   const last = new Date(y, m, 0).getDate();
   return { from: key + '-01', to: key + '-' + String(last).padStart(2, '0') };
+}
+
+// 机会式预补货：在「本来命中缓存、秒回」的那次渲染里，顺手把袋子补一点。
+// 显示的还是旧图，用户无感；等到真该换图时，袋里已有货，只剩下载这一步。
+async function prefetchBag(ctx, cfg, sig) {
+  try {
+    const bag = readJSON(ctx, K.bag) || {};
+    if (bag.sig !== sig) return;
+    const size = cfg.bagSize || 50;
+    if (Array.isArray(bag.items) && bag.items.length >= Math.max(8, Math.floor(size / 2))) return;
+
+    const badSet = new Set(Object.keys(readBad(ctx)));
+    const historySet = new Set((readJSON(ctx, K.history) || []).map(String));
+    let c = cfg;
+    if (cfg.monthSlice && cfg.periodDays > 0 && cfg.sort !== 'date' && !bag.noMonth) {
+      const months = (Array.isArray(bag.months) && bag.months.length) ? bag.months : shuffleArr(monthKeys(cfg.periodDays));
+      const mk = months[0];
+      const rg = monthRange(mk);
+      c = Object.assign({}, cfg, { dateFilter: 'date:' + rg.from + '..' + rg.to, monthLock: true });
+      bag.months = months;
+      bag.lastMonth = mk;
+    }
+    const page = cfg.sort === 'random'
+      ? (c.dateFilter && cfg.site === 'yande' ? 1 + Math.floor(Math.random() * 20) : 1 + Math.floor(Math.random() * 3))
+      : Math.max(1, pool_page(bag));
+
+    const res = await search(ctx, c, page, bag.plan, badSet, historySet, null);
+    if (!res.ok || !res.items.length) return;
+    const add = dedupeVariants(res.items, cfg.variantDedupe, cfg.artistDedupe);
+    const have = new Set((bag.items || []).map(it => String(it.uid)));
+    const merged = (bag.items || []).concat(add.filter(it => !have.has(String(it.uid))));
+    bag.items = shuffleArr(merged).slice(0, size);
+    bag.plan = res.plan || bag.plan || null;
+    bag.sig = sig;
+    writeJSON(ctx, K.bag, bag);
+  } catch (e) { /* 预补货失败不影响本次渲染 */ }
+}
+
+function pool_page(bag) {
+  const n = Number((bag && bag.page) || 1) || 1;
+  return n >= 10 ? 1 : n + 1;
 }
 
 // 同一个画师常一次上传一整套（草稿/差分/裁切），md5 不同但看起来一样。
