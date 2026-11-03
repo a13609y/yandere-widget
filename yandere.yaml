@@ -5,9 +5,15 @@ icon: https://raw.githubusercontent.com/a13609y/yandere-widget/main/icon.png
 homepage: https://github.com/a13609y/yandere-widget
 manual: https://github.com/a13609y/yandere-widget#readme
 
-# 设置项按「分级 / 内容 / 画幅 / 过滤 / 显示」分五组，名字前缀就是分组名；分级放最前面方便调
+# 设置项顺序：换图间隔 → 分级 → 内容 → 画幅 → 过滤 → 显示（名字前缀就是分组名）
 env_schema:
-  # ── 分级（s / q / e 三个独立开关，至少留一个；放最前面方便调）──
+  # ── 换图间隔（最常调，放最上面）──
+  COOLDOWN:
+    name: 换图间隔（分钟）
+    description: "分钟。填 0 = 每次刷新都实时请求新图（想看新图就手动填 0）；>0 = 间隔内直接显示上次那张，不联网。不填时的默认值是 30"
+    default_value: "30"
+
+  # ── 分级（s / q / e 三个独立开关，至少留一个）──
   SHOW_S:
     name: 分级 · 全年龄（s）
     description: "三个开关自由组合；全关掉会自动按「仅全年龄」处理，不会筛空"
@@ -160,12 +166,7 @@ env_schema:
     description: "多个用逗号分隔（guro, vore）；标签内部的空格会自动转下划线（erect nipples → erect_nipples）"
     default_value: ""
 
-  # ── 显示 ──
-  COOLDOWN:
-    name: 显示 · 换图间隔
-    description: "分钟。填 0 = 每次刷新都实时请求新图（想看新图就手动填 0）；>0 = 间隔内直接显示上次那张，不联网。不填时的默认值是 30"
-    default_value: "30"
-
+  # ── 显示（其余）──
   NO_REPEAT:
     name: 显示 · 防重复窗口
     description: "所有尺寸共用一份历史，显示过的作品在这 N 张内不会再出现"
