@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v5.2';
+const SCRIPT_VER = 'v5.3';
 
 // konachan 有两个域名：.net 是纯净镜像（只有 s），.com 才含 q/e。
 // 勾了擦边/工口就自动换 .com，只勾全年龄就用 .net。
@@ -604,11 +604,12 @@ function buildAttempts(cfg, plan) {
     });
   }
 
-  // 最后兜底：评分也不要了
-  if (cfg.minScore > 0) {
+  // 最后兜底：评分不要了、时段不限、画幅一律回粗分档（放着最后一道保险，避免整条链走空）
+  {
+    const c = Object.assign({}, cfg, { minScore: 0, dateFilter: '' });
     list.push({
-      cfg: Object.assign({}, cfg, { minScore: 0, dateFilter: '' }),
-      useTags: withTags, meta: { sc: 0, pd: 0, rl: 0, tf: 0 }
+      cfg: variantCfg(c, { sc: 0, pd: 0, rl: 1, tf: 0 }),
+      useTags: withTags, meta: { sc: 0, pd: 0, rl: 1, tf: 0 }
     });
   }
   return list;
