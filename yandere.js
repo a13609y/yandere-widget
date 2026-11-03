@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v4.7';
+const SCRIPT_VER = 'v4.8';
 
 // konachan 有两个域名：.net 是纯净镜像（只有 s），.com 才含 q/e。
 // 勾了擦边/工口就自动换 .com，只勾全年龄就用 .net。
@@ -195,7 +195,7 @@ export default async function (ctx) {
   const poolKey = K.pool + cfg.ratioLabel;
   let pool = readJSON(ctx, poolKey) || {};
   if (!Array.isArray(pool.items)) pool.items = [];
-  if (pool.sig !== sig) pool = { items: [], page: 1, sig };
+  if (pool.sig !== sig) pool = { items: [], page: 1, sig, plan: null };
   if (!pool.page) pool.page = 1;
 
   let history = readJSON(ctx, K.history);
@@ -204,7 +204,6 @@ export default async function (ctx) {
 
   const badSet = new Set(Object.keys(readBad(ctx)));
   let candidate = pickFromPool(pool, historySet, cfg, badSet);
-  let spare = [];                    // 放宽档位抓到的图：只用这一次，不进池子
   const seenItems = [];              // 本次搜到的全部图，用来在「没新图」时轮换
   let searches = 0;
   let lastError = '';
@@ -223,19 +222,19 @@ export default async function (ctx) {
       searches++;
 
       res.items.forEach(it => seenItems.push(it));
-      const strictItems = res.items.filter(it => isStrictMeta(it.meta, cfg));
-      const relaxedItems = res.items.filter(it => !isStrictMeta(it.meta, cfg));
-      const have = new Set(pool.items.map(it => String(it.id)));
-      const added = strictItems.filter(it => !have.has(String(it.id)) && !badSet.has(String(it.id)));
-      pool.items = pool.items.concat(added).slice(-MAX_POOL);
+      const tier = res.ok ? (res.plan || null) : null;
+      // 档位换了 → 池子里那批图不再符合，整批作废，别混着用
+      const sameTier = tier ? sameMeta(pool.plan, tier) : !pool.plan;
+      if (!sameTier) pool.items = [];
+      if (res.ok) {
+        const have = new Set(pool.items.map(it => String(it.id)));
+        const added = res.items.filter(it => !have.has(String(it.id)) && !badSet.has(String(it.id)));
+        pool.items = pool.items.concat(added).slice(-MAX_POOL);
+        pool.plan = tier;                // 记住这次生效的档位，下次直接一次请求，且这批图可以继续用
+      }
       pool.sig = sig;
-      pool.plan = res.plan || null;      // 记住这次生效的档位，下次直接一次请求
 
       candidate = pickFromPool(pool, historySet, cfg, badSet);
-      if (!candidate && relaxedItems.length) {
-        spare = relaxedItems.slice();
-        candidate = pickSpare(spare, historySet, badSet);
-      }
       writeJSON(ctx, poolKey, pool);     // 抽走的那张必须落盘，否则下次还从同一批里挑
       if (candidate) break;
       if (!res.items.length) break;
@@ -280,7 +279,7 @@ export default async function (ctx) {
         badSet.add(String(candidate.id));
         markBad(ctx, candidate.id);               // 这张真下不来，7 天内不再试
       }
-      candidate = pickFromPool(pool, historySet, cfg, badSet) || pickSpare(spare, historySet, badSet);
+      candidate = pickFromPool(pool, historySet, cfg, badSet);
       writeJSON(ctx, poolKey, pool);
     }
   }
@@ -757,24 +756,14 @@ function passesFilter(it, cfg) {
 
 function pickFromPool(pool, historySet, cfg, badSet) {
   if (!pool || !Array.isArray(pool.items) || pool.items.length === 0) return null;
+  const tier = pool.plan || null;      // 池子当前装的是哪一档（null = 严格照用户设置）
   const fresh = pool.items.filter(it => it && it.sample
-    && isStrictMeta(it.meta, cfg)
+    && (tier ? sameMeta(it.meta, tier) : isStrictMeta(it.meta, cfg))
     && !historySet.has(String(it.id))
     && !(badSet && badSet.has(String(it.id))));
   if (fresh.length === 0) return null;
   const picked = fresh[Math.floor(Math.random() * fresh.length)];
   pool.items = pool.items.filter(it => it !== picked);
-  return picked;
-}
-
-// 放宽档位抓来的图只用在本次刷新，不进池子（否则会一直盖住严格档位）
-function pickSpare(spare, historySet, badSet) {
-  const fresh = (spare || []).filter(it => it && it.sample
-    && !historySet.has(String(it.id))
-    && !(badSet && badSet.has(String(it.id))));
-  if (!fresh.length) return null;
-  const picked = fresh[Math.floor(Math.random() * fresh.length)];
-  for (let i = spare.length - 1; i >= 0; i--) { if (spare[i] === picked) spare.splice(i, 1); }
   return picked;
 }
 
