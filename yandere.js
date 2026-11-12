@@ -31,7 +31,7 @@
  * DEBUG       调试角标                                               默认 false
  * ================================================================ */
 
-const SCRIPT_VER = 'v8.1';
+const SCRIPT_VER = 'v8.2';
 
 // konachan 有两个域名：.net 是纯净镜像（只有 s），.com 才含 q/e。
 // 勾了擦边/工口就自动换 .com，只勾全年龄就用 .net。
@@ -228,27 +228,36 @@ export default async function (ctx) {
       // 所以按画师去重后往往不够装一袋 → 再取一页合并，最多 3 页
       let acc = [];
       let pages = 0;
-      while (pages < 3 && acc.length < cfg.bagSize && searches < 6) {
+      // yande 单源 + 随机/权重：一次就拿了整个月（300 条），再翻是同一页，白花 4 秒
+      const maxPages = (cfg.site === 'yande' && isRandomLike(cfg)) ? 1 : 3;
+      while (pages < maxPages && acc.length < cfg.bagSize && searches < 6) {
         try {
-          const yandeRandomWithDate = cfg.site === 'yande' && cfg.sort === 'random' && !!cfg.dateFilter;
-          const page = cfg.sort === 'random'
-            ? (yandeRandomWithDate ? 1 + Math.floor(Math.random() * 20) : 1 + Math.floor(Math.random() * 3))
-            : Math.max(1, pool.page || 1);
+          const yandeRandomWithDate = cfg.site === 'yande' && isRandomLike(cfg);
 
           // 时段切块：从「月份袋」里抽一个自然月，只在这个月里取图
           let c = cfg;
-          if (cfg.monthSlice && cfg.periodDays > 0 && cfg.sort !== 'date' && !bag.noMonth) {
+          if (cfg.monthSlice && cfg.periodDays > 0 && !bag.noMonth) {
             if (!Array.isArray(bag.months) || !bag.months.length) bag.months = shuffleArr(monthKeys(cfg.periodDays));
-            const mk = bag.months.shift();
-            const rg = monthRange(mk);
-            c = Object.assign({}, cfg, { dateFilter: 'date:' + rg.from + '..' + rg.to, monthLock: true, monthLabel: mk });
-            bag.lastMonth = mk;
+            let mk = null, rg = null;
+            while (bag.months.length && !rg) {        // 「权重」档：被成熟期吃掉的月份直接跳过
+              mk = bag.months.shift();
+              rg = clipMonthRange(cfg, monthRange(mk));
+            }
+            if (rg) {
+              c = Object.assign({}, cfg, { dateFilter: 'date:' + rg.from + '..' + rg.to, monthLock: true, monthLabel: mk });
+              bag.lastMonth = mk;
+            }
           }
+          // 取页要在月切块之后算：月份区间只有 5~6 页，翻到第 20 页必然空响应
+          const page = isRandomLike(cfg)
+            ? (yandeRandomWithDate ? 1 + Math.floor(Math.random() * pageCapFor(c)) : 1 + Math.floor(Math.random() * 3))
+            : Math.max(1, pool.page || 1);
+
           // 回到「Konachan 优先，空了才用 yande」；不再两源轮换（两站图基本重合，轮换没好处）
           const res = await search(ctx, c, page, pool.plan, badSet, historySet);
           pages++;
           searches++;
-          if (cfg.sort !== 'random') pool.page = page >= 10 ? 1 : page + 1;
+          if (!isRandomLike(cfg)) pool.page = page >= pageCapFor(c) ? 1 : page + 1;
           if (res.ok) pool.plan = res.plan || null;
           pool.sig = sig;
           writeJSON(ctx, poolKey, pool);
@@ -260,19 +269,30 @@ export default async function (ctx) {
           // 跨页也去重（同一张图两页都可能出现）
           const have = new Set(acc.map(it => String(it.uid)));
           add.forEach(it => { if (!have.has(String(it.uid))) { have.add(String(it.uid)); acc.push(it); } });
+          // yande 走的是「大页模式」（limit=300 且固定 page=1，整月一次拿完），
+          // 再翻一次只会拿到一模一样的一页 → 直接结束（自动模式下 Konachan 挂了回退到 yande 时尤其浪费）
+          if (res.host === 'yande' && isRandomLike(cfg)) break;
         } catch (e) {
           lastError = (e && e.message) || '搜索失败';
           errorStatus = e && e.status ? e.status : null;
           break;
         }
       }
-      if (!acc.length && cfg.monthSlice && cfg.periodDays > 0 && cfg.sort !== 'date' && !bag.noMonth) {
-        bag.noMonth = true;              // 按月的这一轮全空 → 下一轮不切月，用整个时段兜底
+      // 这个月没货（比如这一月的图全看过了）→ 先换一个月试试，别马上关掉切月
+      // （以前直接置 noMonth=true，会永久放弃按月切块，时间分布就散了）
+      if (!acc.length && cfg.monthSlice && cfg.periodDays > 0 && !bag.noMonth) {
+        bag.emptyMonths = (bag.emptyMonths || 0) + 1;
+        if (bag.emptyMonths >= 3) {
+          bag.noMonth = true;            // 连换三个月全空 → 改用整个时段兜底
+          bag.emptyMonths = 0;
+        }
         bag.items = [];
         writeJSON(ctx, K.bag, bag);
         continue;
       }
-      bag.items = shuffleArr(dedupeVariants(acc, cfg.variantDedupe, cfg.artistDedupe)).slice(0, cfg.bagSize);
+      bag.emptyMonths = 0;
+      const uniq = dedupeVariants(acc, cfg.variantDedupe, cfg.artistDedupe);
+      bag.items = (cfg.weighted ? weightedShuffle(uniq, cfg.weightK) : shuffleArr(uniq)).slice(0, cfg.bagSize);
       // 一袋装不满（素材太薄，比如只勾工口）→ 下次别切月了，用整个时段兜，池子大得多
       bag.noMonth = bag.items.length < Math.min(12, cfg.bagSize);
       writeJSON(ctx, K.bag, bag);
@@ -392,12 +412,16 @@ export default async function (ctx) {
 // 洗牌参数不再暴露成变量：按「排序」自动套用一套预设
 //   随机 = 大袋子、按月切块、不回放
 //   热度 = 小袋子、按月切块、10% 回放（榜单走完一定会回头）
-//   最新 = 更小的袋子、不切月、不回放（袋子一大就不“最新”了）
+//   权重 = 大袋子、按月切块、按分数加权洗牌、不回放 + 14 天成熟期
 const SORT_PRESETS = {
   random: { bagSize: 50, monthSlice: true,  variantDedupe: true, artistDedupe: false, repeatPct: 0 },
   score:  { bagSize: 30, monthSlice: true,  variantDedupe: true, artistDedupe: false, repeatPct: 10 },
-  date:   { bagSize: 20, monthSlice: false, variantDedupe: true, artistDedupe: false, repeatPct: 0 }
+  weight: { bagSize: 40, monthSlice: true,  variantDedupe: true, artistDedupe: false, repeatPct: 0 }
 };
+
+// 「权重」档的两个固定值（不暴露成设置项）
+const MATURE_DAYS = 14;   // 成熟期：最近 14 天的投稿不参与，等分数涨完了再判
+const WEIGHT_K = 0.4;     // 分数权重指数：w = (score+1)^0.4，温和偏向高分，不饿死低分池
 
 function readConfig(env, family) {
   const s = (k, d) => {
@@ -448,17 +472,19 @@ function readConfig(env, family) {
   })();
 
   const sortLabel = s('SORT', '随机');
-  const sort = /热度|score/i.test(sortLabel) ? 'score' : (/最新|date/i.test(sortLabel) ? 'date' : 'random');
+  // 「最新」已去掉；老用户 env 里存着「最新」的话，落到「权重」（同样是“跳过刚发的、等分数涨完”的思路）
+  const sort = /权重|weight|最新|date/i.test(sortLabel) ? 'weight' : (/热度|score/i.test(sortLabel) ? 'score' : 'random');
   const preset = SORT_PRESETS[sort] || SORT_PRESETS.random;
 
-  // 时段：yande.re 支持 date:>YYYY-MM-DD（也支持 date:A..B），不支持 age:
-  // 「最新」本身就是时间倒序，时段没意义 → 忽略
+  // 时段：yande.re 支持 date:>YYYY-MM-DD（也支持 date:A..B / date:<YYYY-MM-DD），不支持 age:
   const periodLabel = s('PERIOD', '三年内');
   const periodDays = {
     '一天内': 1, '一周内': 7, '一个月内': 30, '三个月内': 90,
     '半年内': 180, '一年内': 365, '两年内': 730, '三年内': 1095, '六年内': 2190
   }[periodLabel] || 0;
-  const dateFilter = (periodDays > 0 && sort !== 'date') ? 'date:>' + ymdDaysAgo(periodDays) : '';
+  // 成熟期（只在「权重」档启用）：最近 14 天的投稿分数还没涨完，先不参与评选
+  const matureAt = sort === 'weight' ? Date.now() - MATURE_DAYS * 86400000 : 0;
+  const dateFilter = dateFilterFor(periodDays, matureAt);
 
   // 排除标签：开关命中的 + 手填的
   const exclude = (() => {
@@ -490,7 +516,7 @@ function readConfig(env, family) {
     tags: rawTags,
     tagsJoined: rawTags.join(' '),
     sort,
-    sortLabel: sort === 'score' ? '热度' : (sort === 'date' ? '最新' : '随机'),
+    sortLabel: sort === 'weight' ? '权重' : (sort === 'score' ? '热度' : '随机'),
     site,
     periodLabel,
     periodDays,
@@ -514,6 +540,9 @@ function readConfig(env, family) {
     maxHistory: 200,   // 固定值，不再暴露成变量（洗牌袋模式下 200 足够）
     showInfo: bool('SHOW_INFO', false),   // 默认不显示，想看再手动打开
     // 洗牌参数由「排序」决定（见 SORT_PRESETS），不再单独暴露成变量
+    weighted: sort === 'weight',
+    matureAt,
+    weightK: WEIGHT_K,
     repeatPct: preset.repeatPct,
     bagSize: preset.bagSize,
     monthSlice: preset.monthSlice,
@@ -573,11 +602,45 @@ function hostsFor(cfg) {
 // 注意：标签之间必须用「空格」分隔再整体 encodeURIComponent。
 // 如果先拼 '+' 再编码，'+' 会变成 %2B（字面加号），服务端就不当作分隔符了——
 // 整个串被当成一个不存在的标签，返回一堆随机图，分级/标签筛选全部失效。
+// 时间过滤统一在这里拼：下限=时段，上限=成熟期（只有「权重」档有上限）
+function dateFilterFor(days, matureAt) {
+  const hi = matureAt ? ymdDaysAgo(MATURE_DAYS) : '';
+  if (!hi) return days ? 'date:>' + ymdDaysAgo(days) : '';
+  // 时段比成熟期还短（选了「一天内」「一周内」）→ 那个窗口里全是没涨完分的图，
+  // 这时忽略时段下限，只保留 14 天前的上限，否则必然空结果
+  if (!days || days <= MATURE_DAYS) return 'date:<' + hi;
+  return 'date:' + ymdDaysAgo(days) + '..' + hi;
+}
+
+// 「随机」和「权重」都是随机取样，取页/翻页策略一致，只是「权重」多一道加权洗牌
+// 单月切块时源站只有 5~6 页（实测 yande 单月 400~600 张、Konachan 700~800 张）；
+// 不切月时（整个时段）页数很多，随机翻到 20 页没问题
+function pageCapFor(cfg) {
+  return cfg.monthLock ? 5 : 20;
+}
+
+function isRandomLike(cfg) {
+  return cfg.sort === 'random' || cfg.sort === 'weight';
+}
+
+// 按月切块时把月份区间上限压到成熟期之前；整月都被吃掉就返回 null（跳过这个月）
+function clipMonthRange(cfg, rg) {
+  if (!cfg.matureAt) return rg;
+  const hi = ymdDaysAgo(MATURE_DAYS);
+  const to = rg.to < hi ? rg.to : hi;
+  if (rg.from > to) return null;
+  return { from: rg.from, to };
+}
+
 function buildTagString(cfg, useTags) {
   // yande.re 的 order:random 叠加 date: 只回 0~3 条（服务端毛病），
   // 这时改用 order:date + 随机页：仍然是“随机挑一批”，但落在时段内且数量正常
-  const yandeRandomWithDate = (cfg.site === 'yande' || cfg.forceOrderDate) && cfg.sort === 'random' && !!cfg.dateFilter;
-  const parts = ['order:' + (yandeRandomWithDate ? 'date' : (cfg.sort || 'random'))];   // 必须第一个，否则排序失效
+  const orderName = cfg.sort === 'weight' ? 'random' : (cfg.sort || 'random');
+  // yande.re 的 order:random 叠加「区间」或「date:>」会退化（0~3 条），只叠 date:< 上限时正常
+  // yande.re 的 order:random 是个半残：无日期只回 ~20 条、带 date:< 回 ~15 条、带区间 0 条，
+  // 所以只要是「随机/权重」档走 yande，就一律换成 order:date + 随机页（每页照样 100 条）
+  const yandeRandom = (cfg.site === 'yande' || cfg.forceOrderDate) && isRandomLike(cfg);
+  const parts = ['order:' + (yandeRandom ? 'date' : orderName)];   // 必须第一个，否则排序失效
   if (useTags && cfg.tags.length) parts.push(...cfg.tags);
   if (cfg.ratingTag) parts.push(cfg.ratingTag);
   // 评分也交给服务端：本地「先随机抽 100 张再筛掉低分」等于白抽一大半，
@@ -613,7 +676,7 @@ function variantCfg(cfg, meta) {
   const pd = meta.pd || 0;
   if (pd !== effPeriod(cfg)) {
     c.periodDays = pd;
-    c.dateFilter = pd > 0 ? 'date:>' + ymdDaysAgo(pd) : '';
+    c.dateFilter = dateFilterFor(pd, c.matureAt);
   }
   if (meta.rl) {
     c.customOn = false;
@@ -657,15 +720,15 @@ function buildAttempts(cfg, plan) {
   if (cfg.dateFilter && !cfg.monthLock) {
     let days = PERIOD_LADDER.filter(d => d > (cfg.periodDays || 0));
     // yande.re 的 order:random 叠加 date 几乎必空（实测 0~3 条），中间档位纯浪费请求，直接跳到不限
-    if (cfg.site === 'yande' && cfg.sort === 'random') days = [];
+    if (cfg.site === 'yande' && isRandomLike(cfg)) days = [];
     days.slice(0, 3).forEach(d => {
       list.push({
-        cfg: Object.assign({}, cfg, { dateFilter: 'date:>' + ymdDaysAgo(d), periodDays: d }),
+        cfg: Object.assign({}, cfg, { dateFilter: dateFilterFor(d, cfg.matureAt), periodDays: d }),
         useTags: withTags, meta: Object.assign({}, strict, { pd: d })
       });
     });
     list.push({
-      cfg: Object.assign({}, cfg, { dateFilter: '', periodDays: 0 }),
+      cfg: Object.assign({}, cfg, { dateFilter: dateFilterFor(0, cfg.matureAt), periodDays: 0 }),
       useTags: withTags, meta: Object.assign({}, strict, { pd: 0 })
     });
   }
@@ -699,14 +762,18 @@ async function search(ctx, cfg, page, plan, skipSet, historySet, hostOrder) {
       budget--;
       const host = hostList[i];
       // 轮到 yande 且带时段时，它的 order:random 只回 0~3 条 → 换成 order:date
-      const cc = (host === 'yande' && c.sort === 'random' && c.dateFilter) ? Object.assign({}, c, { forceOrderDate: true }) : c;
-      const url = HOSTS[host] + '?tags=' + encodeURIComponent(buildTagString(cc, useTags)) + '&limit=100&page=' + pg;
+      const cc = (host === 'yande' && isRandomLike(c) && c.dateFilter) ? Object.assign({}, c, { forceOrderDate: true }) : c;
+      // yande 的随机/权重档：一次要 300 条（单月总量 400~600，基本一页拿完），避免翻 3 页白等
+      const bigPage = host === 'yande' && isRandomLike(c);
+      const limit = bigPage ? 300 : 100;
+      const page = bigPage ? 1 : pg;
+      const url = HOSTS[host] + '?tags=' + encodeURIComponent(buildTagString(cc, useTags)) + '&limit=' + limit + '&page=' + page;
       try {
         const items = normalize(await fetchJson(ctx, url, cc), host, sent)
-          .filter(it => passesFilter(it, c) && !(skipSet && skipSet.has(String(it.id))));   // 下不下来的图直接当不存在，好让放宽链继续往下走
+          .filter(it => passesFilter(it, c) && !(skipSet && skipSet.has(String(it.uid))));   // 下不来的图当不存在，好让放宽链继续往下走（注意键是 uid/md5，不是 post id）
         okHosts.push(host);
         if (!items.length) continue;
-        const fresh = historySet ? items.filter(it => !historySet.has(String(it.id))) : items;
+        const fresh = historySet ? items.filter(it => !historySet.has(String(it.uid))) : items;
         if (fresh.length) return { items, fresh, host, meta: sent };
         stalePool.push.apply(stalePool, items);   // 全看过 → 记下来兜底，同时让链继续降档
       } catch (e) {
@@ -779,6 +846,7 @@ function normalize(list, host, meta) {
       width: Number(p.width) || 0,
       height: Number(p.height) || 0,
       rating: p.rating || '',
+      created: Number(p.created_at) || 0,
       score: Number(p.score) || 0,
       md5: p.md5 || '',
       creator: p.creator_id || p.author || '',
@@ -843,6 +911,7 @@ function passesFilter(it, cfg) {
   if (shortSide && shortSide < cfg.minW * 0.6) return false;   // 太小的直接跳过
   if (it.sampleSize && it.sampleSize / 1024 > HARD_LIMIT_KB) return false;
   if (cfg.minScore > 0 && (it.score || 0) < cfg.minScore) return false;   // 最低评分
+  if (cfg.matureAt && it.created && it.created * 1000 > cfg.matureAt) return false;   // 成熟期兜底
 
   return true;
 }
@@ -882,33 +951,39 @@ async function prefetchBag(ctx, cfg, sig) {
     const badSet = new Set(Object.keys(readBad(ctx)));
     const historySet = new Set((readJSON(ctx, K.history) || []).map(String));
     let c = cfg;
-    if (cfg.monthSlice && cfg.periodDays > 0 && cfg.sort !== 'date' && !bag.noMonth) {
+    if (cfg.monthSlice && cfg.periodDays > 0 && !bag.noMonth) {
       const months = (Array.isArray(bag.months) && bag.months.length) ? bag.months : shuffleArr(monthKeys(cfg.periodDays));
+      while (months.length && !clipMonthRange(cfg, monthRange(months[0]))) months.shift();   // 跳过被成熟期吃掉的月份
       const mk = months[0];
-      const rg = monthRange(mk);
-      c = Object.assign({}, cfg, { dateFilter: 'date:' + rg.from + '..' + rg.to, monthLock: true });
-      bag.months = months;
-      bag.lastMonth = mk;
+      const rg = mk ? clipMonthRange(cfg, monthRange(mk)) : null;
+      if (rg) {
+        c = Object.assign({}, cfg, { dateFilter: 'date:' + rg.from + '..' + rg.to, monthLock: true });
+        bag.months = months;
+        bag.lastMonth = mk;
+      } else {
+        bag.months = [];
+      }
     }
-    const page = cfg.sort === 'random'
-      ? (c.dateFilter && cfg.site === 'yande' ? 1 + Math.floor(Math.random() * 20) : 1 + Math.floor(Math.random() * 3))
-      : Math.max(1, pool_page(bag));
+    const page = isRandomLike(cfg)
+      ? (c.dateFilter && cfg.site === 'yande' ? 1 + Math.floor(Math.random() * pageCapFor(c)) : 1 + Math.floor(Math.random() * 3))
+      : Math.max(1, pool_page(bag, pageCapFor(c)));
 
     const res = await search(ctx, c, page, bag.plan, badSet, historySet, null);
     if (!res.ok || !res.items.length) return;
     const add = dedupeVariants(res.items, cfg.variantDedupe, cfg.artistDedupe);
     const have = new Set((bag.items || []).map(it => String(it.uid)));
     const merged = (bag.items || []).concat(add.filter(it => !have.has(String(it.uid))));
-    bag.items = shuffleArr(merged).slice(0, size);
+    bag.items = (cfg.weighted ? weightedShuffle(merged, cfg.weightK) : shuffleArr(merged)).slice(0, size);
     bag.plan = res.plan || bag.plan || null;
     bag.sig = sig;
     writeJSON(ctx, K.bag, bag);
   } catch (e) { /* 预补货失败不影响本次渲染 */ }
 }
 
-function pool_page(bag) {
+function pool_page(bag, cap) {
   const n = Number((bag && bag.page) || 1) || 1;
-  return n >= 10 ? 1 : n + 1;
+  const c = cap || 10;
+  return n >= c ? 1 : n + 1;
 }
 
 // 同一个画师常一次上传一整套（草稿/差分/裁切），md5 不同但看起来一样。
@@ -939,6 +1014,19 @@ function dedupeVariants(list, doVariant, doArtist) {
 }
 
 // Fisher-Yates 洗牌
+// 加权洗牌（Efraimidis–Spirakis）：每张按 w=(score+1)^k 生成 key，取 key 最大的排前面。
+// 等效「不放回按权重抽样」：高分更容易靠前，低分不会消失，池子大小不变。
+function weightedShuffle(arr, k) {
+  const kk = Number.isFinite(k) ? k : 0.4;
+  return arr
+    .map(it => {
+      const w = Math.pow(Math.max(0, Number(it.score) || 0) + 1, kk);
+      return { it, key: Math.pow(Math.random(), 1 / w) };
+    })
+    .sort((a, b) => b.key - a.key)
+    .map(x => x.it);
+}
+
 function shuffleArr(arr) {
   const a = (arr || []).slice();
   for (let i = a.length - 1; i > 0; i--) {
